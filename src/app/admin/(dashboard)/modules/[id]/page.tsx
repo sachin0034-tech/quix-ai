@@ -1,46 +1,24 @@
-import { adminFetchModule, adminFetchQuestions } from "@/lib/admin-supabase";
-import { notFound } from "next/navigation";
 import Link from "next/link";
-import ModuleDetailClient from "../../_components/ModuleDetailClient";
+import { notFound } from "next/navigation";
+import { adminDomains, adminSchema } from "@/lib/server/admin-data";
+import { PageHead, SchemaBanner } from "../../_components/ui";
+import DomainEditor from "../../_components/DomainEditor";
 
-export default async function ModuleDetailPage({
-  params,
-}: {
-  params: Promise<{ id: string }>;
-}) {
+export const dynamic = "force-dynamic";
+
+export default async function DomainPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
-  const moduleId = Number(id);
-
-  const [mod, questions] = await Promise.all([
-    adminFetchModule(moduleId),
-    adminFetchQuestions(moduleId),
-  ]);
-
-  if (!mod) return notFound();
-
+  const [domains, schema] = await Promise.all([adminDomains(), adminSchema()]);
+  const domain = domains.find((d) => d.id === Number(id));
+  if (!domain) notFound();
   return (
-    <div>
-      {/* Breadcrumb */}
-      <div
-        style={{
-          padding: "20px 32px 0",
-          display: "flex",
-          alignItems: "center",
-          gap: "8px",
-          fontSize: "13px",
-        }}
-      >
-        <Link
-          href="/admin"
-          style={{ color: "var(--navy)", textDecoration: "none", fontWeight: 500 }}
-        >
-          Modules
-        </Link>
-        <span style={{ color: "var(--faint)" }}>›</span>
-        <span style={{ color: "var(--ink-2)" }}>{mod.title}</span>
-      </div>
-
-      <ModuleDetailClient mod={mod} initialQuestions={questions} />
+    <div style={{ padding: "32px 40px", maxWidth: 860 }}>
+      <p style={{ margin: "0 0 8px" }}><Link href="/admin" style={{ color: "var(--muted)" }}>← All domains</Link></p>
+      <PageHead title={domain.title}>
+        <Link href={`/admin/questions?domain=${domain.id}`} style={{ color: "#214f91" }}>{domain.questionCount} questions →</Link>
+      </PageHead>
+      <SchemaBanner schema={schema} />
+      <DomainEditor domain={domain} />
     </div>
   );
 }

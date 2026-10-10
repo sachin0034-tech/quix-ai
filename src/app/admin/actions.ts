@@ -3,20 +3,13 @@
 import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
-import { createClient } from "@supabase/supabase-js";
-import { modules as staticModules } from "@/lib/quiz-data";
+import { db } from "@/lib/server/db";
+import { invalidateBank } from "@/lib/bank";
+import { TRACK_IDS } from "@/lib/blueprint";
 
 const ADMIN_EMAIL = "admin123@gmail.com";
 const ADMIN_PASSWORD = "admin123@#";
 const SESSION_VALUE = "quix_admin_v1";
-
-function getAdminSupabase() {
-  const url = process.env.NEXT_PUBLIC_SUPABASE_URL!;
-  const key =
-    process.env.SUPABASE_SERVICE_ROLE_KEY ??
-    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
-  return createClient(url, key);
-}
 
 // ── Auth ──────────────────────────────────────────────────────────────────────
 
@@ -44,213 +37,181 @@ export async function logoutAction() {
   redirect("/admin/login");
 }
 
-// ── Modules ───────────────────────────────────────────────────────────────────
+// ── Domains (quiz_modules + quiz_sub_skills) and questions (quiz_questions) ────
 
-export async function createModuleAction(data: {
+type Result = { error?: string; id?: number };
+
+function afterWrite() {
+  invalidateBank();
+  for (const path of ["/", "/associate", "/developer", "/admin", "/admin/questions"]) revalidatePath(path);
+}
+
+export interface DomainInput {
+  id?: number;
+  track: string;
   title: string;
-  description: string;
-  locked: boolean;
-}): Promise<{ error?: string }> {
-  const sb = getAdminSupabase();
-  const { data: maxRow } = await sb
-    .from("quiz_modules")
-    .select("order_index")
-    .order("order_index", { ascending: false })
-    .limit(1)
-    .maybeSingle();
+  weight: number;
+  courseModule: number | null;
+  objective: string;
+  docLinks: { title: string; url: string }[];
+  subSkills: { name: string; weight: number | null }[];
+}
 
-  const { error } = await sb.from("quiz_modules").insert({
-    title: data.title.trim(),
-    description: data.description.trim(),
-    locked: data.locked,
-    order_index: (maxRow?.order_index ?? 0) + 1,
-  });
+export async function saveDomainAction(d: DomainInput): Promise<Result> {
+  await requireAdmin();
+  const c = db();
+  if (!c) return { error: "Supabase is not configured" };
+  const title = d.title.trim();
+  if (!title) return { error: "Domain name is required" };
+  if (!(TRACK_IDS as string[]).includes(d.track)) return { error: "Choose a track" };
+  if (!(d.weight >= 0 && d.weight <= 100)) return { error: "Weight must be between 0 and 100" };
+  const names = d.subSkills.map((s) => s.name.trim()).filter(Boolean);
+  if (new Set(names.map((n) => n.toLowerCase())).size !== names.length) return { error: "Sub-skill names must be unique" };
+  if (d.docLinks.some((l) => !/^https?:\/\//i.test(l.url))) return { error: "Doc links need a full http(s) URL" };
 
+  const row = {
+    title,
+    track: d.track,
+    weight: d.weight,
+    course_module: d.courseModule,
+    objective: d.objective.trim() || null,
+    doc_links: d.docLinks.filter((l) => l.title.trim() && l.url.trim()),
+  };
+  let id = d.id;
+  if (id) {
+    const { error } = await c.from("quiz_modules").update(row).eq("id", id);
+    if (error) return { error: error.message };
+  } else {
+    const { data: max } = await c.from("quiz_modules").select("order_index").order("order_index", { ascending: false }).limit(1).maybeSingle();
+    const { data, error } = await c.from("quiz_modules").insert({ ...row, description: "", locked: false, order_index: (max?.order_index ?? 0) + 1 }).select("id").single();
+    if (error) return { error: error.message };
+    id = data.id as number;
+  }
+
+  // Replace the sub-skill list
+  const del = await c.from("quiz_sub_skills").delete().eq("module_id", id);
+  if (del.error) return { error: `${del.error.message}. Run the SQL in supabase/migrations/0001_cert_readiness.sql.` };
+  const subs = d.subSkills
+    .filter((s) => s.name.trim())
+    .map((s, i) => ({ module_id: id, name: s.name.trim(), weight: s.weight == null ? null : Number(s.weight), order_index: i + 1 }));
+  if (subs.length) {
+    const ins = await c.from("quiz_sub_skills").insert(subs);
+    if (ins.error) return { error: ins.error.message };
+  }
+  afterWrite();
+  return { id };
+}
+
+export async function deleteDomainAction(id: number): Promise<Result> {
+  await requireAdmin();
+  const c = db();
+  if (!c) return { error: "Supabase is not configured" };
+  const { error } = await c.from("quiz_modules").delete().eq("id", id); // cascades to its sub-skills and questions
   if (error) return { error: error.message };
-  revalidatePath("/admin");
+  afterWrite();
   return {};
 }
 
-export async function updateModuleAction(data: {
-  id: number;
-  title: string;
-  description: string;
-  locked: boolean;
-}): Promise<{ error?: string }> {
-  const sb = getAdminSupabase();
-  const { error } = await sb
-    .from("quiz_modules")
-    .update({
-      title: data.title.trim(),
-      description: data.description.trim(),
-      locked: data.locked,
-    })
-    .eq("id", data.id);
-
-  if (error) return { error: error.message };
-  revalidatePath("/admin");
-  revalidatePath(`/admin/modules/${data.id}`);
-  return {};
-}
-
-export async function deleteModuleAction(id: number): Promise<{ error?: string }> {
-  const sb = getAdminSupabase();
-  const { error } = await sb.from("quiz_modules").delete().eq("id", id);
-  if (error) return { error: error.message };
-  revalidatePath("/admin");
-  return {};
-}
-
-// ── Questions ─────────────────────────────────────────────────────────────────
-
-export async function createQuestionAction(data: {
+export interface QuestionInput {
+  id?: number;
   moduleId: number;
   section: string;
   difficulty: string;
   question: string;
-  optionA: string;
-  optionB: string;
-  optionC: string;
-  optionD: string;
+  options: [string, string, string, string];
+  /** "B" or "A,C" */
   answer: string;
-}): Promise<{ error?: string }> {
-  const sb = getAdminSupabase();
-  const { data: maxRow } = await sb
-    .from("quiz_questions")
-    .select("order_index")
-    .eq("module_id", data.moduleId)
-    .order("order_index", { ascending: false })
-    .limit(1)
-    .maybeSingle();
+  explanation: string;
+}
 
-  const { error } = await sb.from("quiz_questions").insert({
-    module_id: data.moduleId,
-    section: data.section.trim(),
-    difficulty: data.difficulty,
-    question: data.question.trim(),
-    option_a: data.optionA.trim(),
-    option_b: data.optionB.trim(),
-    option_c: data.optionC.trim(),
-    option_d: data.optionD.trim(),
-    answer: data.answer,
-    order_index: (maxRow?.order_index ?? 0) + 1,
-  });
+export async function saveQuestionAction(q: QuestionInput): Promise<Result> {
+  await requireAdmin();
+  const c = db();
+  if (!c) return { error: "Supabase is not configured" };
+  if (!q.moduleId) return { error: "Choose a domain" };
+  if (!q.section.trim()) return { error: "Sub-skill is required" };
+  if (!q.question.trim()) return { error: "Question text is required" };
+  if (q.options.some((o) => !o.trim())) return { error: "All four options are required" };
+  if (!/^[ABCD](,[ABCD])*$/.test(q.answer)) return { error: "Select at least one correct answer" };
+  if (!["Easy", "Medium", "Hard"].includes(q.difficulty)) return { error: "Choose a difficulty" };
+  if (/\b(option|answer)\s+[ABCD]\b/i.test(q.explanation)) return { error: "The explanation refers to option letters, but options are shuffled for each learner. Describe the option instead." };
 
+  const row = {
+    module_id: q.moduleId,
+    section: q.section.trim(),
+    difficulty: q.difficulty,
+    question: q.question.trim(),
+    option_a: q.options[0].trim(),
+    option_b: q.options[1].trim(),
+    option_c: q.options[2].trim(),
+    option_d: q.options[3].trim(),
+    answer: q.answer,
+    explanation: q.explanation.trim() || null,
+  };
+  if (q.id) {
+    const { error } = await c.from("quiz_questions").update(row).eq("id", q.id);
+    if (error) return { error: error.message };
+    afterWrite();
+    return { id: q.id };
+  }
+  const { data: max } = await c.from("quiz_questions").select("order_index").eq("module_id", q.moduleId).order("order_index", { ascending: false }).limit(1).maybeSingle();
+  const { data, error } = await c.from("quiz_questions").insert({ ...row, order_index: (max?.order_index ?? 0) + 1 }).select("id").single();
   if (error) return { error: error.message };
-  revalidatePath(`/admin/modules/${data.moduleId}`);
-  revalidatePath("/admin/questions");
+  afterWrite();
+  return { id: data.id as number };
+}
+
+export async function deleteQuestionAction(id: number): Promise<Result> {
+  await requireAdmin();
+  const c = db();
+  if (!c) return { error: "Supabase is not configured" };
+  const { error } = await c.from("quiz_questions").delete().eq("id", id);
+  if (error) return { error: error.message };
+  afterWrite();
   return {};
 }
 
-export async function updateQuestionAction(data: {
-  id: number;
-  moduleId: number;
-  section: string;
-  difficulty: string;
-  question: string;
-  optionA: string;
-  optionB: string;
-  optionC: string;
-  optionD: string;
-  answer: string;
-}): Promise<{ error?: string }> {
-  const sb = getAdminSupabase();
+// ── Reported questions, calls ─────────────────────────────────────────────────
 
-  // Moving to another module puts the question at the end of that module
-  const { data: current, error: readErr } = await sb
-    .from("quiz_questions")
-    .select("module_id")
+async function requireAdmin() {
+  const store = await cookies();
+  if (store.get("admin_session")?.value !== SESSION_VALUE) throw new Error("Not authorised");
+}
+
+export async function resolveReportAction(id: number, status: "upheld" | "dismissed" | "open"): Promise<{ error?: string }> {
+  await requireAdmin();
+  const c = db();
+  if (!c) return { error: "Supabase is not configured" };
+  const { error } = await c
+    .from("reported_questions")
+    .update({ status, resolved_at: status === "open" ? null : new Date().toISOString() })
+    .eq("id", id);
+  if (error) return { error: error.message };
+  revalidatePath("/admin/reports");
+  return {};
+}
+
+/** Advisor logs the call result and whether a course offer was made (call_attended, call_outcome). */
+export async function updateCallAction(data: {
+  id: number;
+  status: "booked" | "attended" | "no_show" | "canceled";
+  outcome: string;
+  offerMade: boolean;
+}): Promise<{ error?: string }> {
+  await requireAdmin();
+  const c = db();
+  if (!c) return { error: "Supabase is not configured" };
+  const { data: row, error } = await c
+    .from("call_bookings")
+    .update({ status: data.status, outcome: data.outcome.slice(0, 2000), offer_made: data.offerMade })
     .eq("id", data.id)
-    .single();
-  if (readErr) return { error: readErr.message };
-  const moved = current.module_id !== data.moduleId;
-  let orderIndex: number | undefined;
-  if (moved) {
-    const { data: maxRow } = await sb
-      .from("quiz_questions")
-      .select("order_index")
-      .eq("module_id", data.moduleId)
-      .order("order_index", { ascending: false })
-      .limit(1)
-      .maybeSingle();
-    orderIndex = (maxRow?.order_index ?? 0) + 1;
-  }
-
-  const { error } = await sb
-    .from("quiz_questions")
-    .update({
-      ...(moved && { module_id: data.moduleId, order_index: orderIndex }),
-      section: data.section.trim(),
-      difficulty: data.difficulty,
-      question: data.question.trim(),
-      option_a: data.optionA.trim(),
-      option_b: data.optionB.trim(),
-      option_c: data.optionC.trim(),
-      option_d: data.optionD.trim(),
-      answer: data.answer,
-    })
-    .eq("id", data.id);
-
+    .select("email")
+    .maybeSingle();
   if (error) return { error: error.message };
-  revalidatePath(`/admin/modules/${data.moduleId}`);
-  if (moved) revalidatePath(`/admin/modules/${current.module_id}`);
-  revalidatePath("/admin/questions");
+  const events = [] as { event: string; props: Record<string, unknown>; email: string | null }[];
+  if (data.status === "attended") events.push({ event: "call_attended", props: {}, email: row?.email ?? null });
+  if (data.outcome || data.offerMade) events.push({ event: "call_outcome", props: { offerMade: data.offerMade, status: data.status }, email: row?.email ?? null });
+  if (events.length) await c.from("analytics_events").insert(events);
+  revalidatePath("/admin/calls");
   return {};
-}
-
-export async function deleteQuestionAction(
-  id: number,
-  moduleId: number
-): Promise<{ error?: string }> {
-  const sb = getAdminSupabase();
-  const { error } = await sb.from("quiz_questions").delete().eq("id", id);
-  if (error) return { error: error.message };
-  revalidatePath(`/admin/modules/${moduleId}`);
-  return {};
-}
-
-// ── Seed ──────────────────────────────────────────────────────────────────────
-
-export async function seedStaticDataAction(): Promise<{ error?: string; seeded?: number }> {
-  const sb = getAdminSupabase();
-
-  let seeded = 0;
-
-  for (const mod of staticModules) {
-    const { data: inserted, error: modErr } = await sb
-      .from("quiz_modules")
-      .insert({
-        title: mod.title,
-        description: mod.description,
-        locked: mod.locked ?? false,
-        order_index: mod.id,
-      })
-      .select("id")
-      .single();
-
-    if (modErr) return { error: `Module "${mod.title}": ${modErr.message}` };
-
-    const dbModuleId = inserted.id;
-
-    for (let i = 0; i < mod.questions.length; i++) {
-      const q = mod.questions[i];
-      const { error: qErr } = await sb.from("quiz_questions").insert({
-        module_id: dbModuleId,
-        section: q.section,
-        difficulty: q.difficulty,
-        question: q.question,
-        option_a: q.options.find((o) => o.label === "A")?.text ?? "",
-        option_b: q.options.find((o) => o.label === "B")?.text ?? "",
-        option_c: q.options.find((o) => o.label === "C")?.text ?? "",
-        option_d: q.options.find((o) => o.label === "D")?.text ?? "",
-        answer: q.answer,
-        order_index: i + 1,
-      });
-      if (qErr) return { error: `Question in "${mod.title}": ${qErr.message}` };
-      seeded++;
-    }
-  }
-
-  revalidatePath("/admin");
-  return { seeded };
 }

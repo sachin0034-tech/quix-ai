@@ -2,7 +2,9 @@
 
 import Link from "next/link";
 
-const CALENDLY_URL = "https://calendly.com/d/dtdk-7jq-xwm/1-1";
+import { BOOKING_URL } from "@/lib/config";
+
+const CALENDLY_URL = BOOKING_URL;
 
 export default function Header({ moduleTitle }: { moduleTitle?: string }) {
   const onQuizPage = !!moduleTitle;
@@ -57,7 +59,7 @@ export default function Header({ moduleTitle }: { moduleTitle?: string }) {
           textOverflow: "ellipsis",
           maxWidth: "360px",
         }}>
-          {moduleTitle ?? "Claude Developer preparation"}
+          {moduleTitle ?? "Claude Certification Practice Quiz"}
         </span>
 
         {/* Spacer */}
@@ -99,7 +101,7 @@ export default function Header({ moduleTitle }: { moduleTitle?: string }) {
           </a>
         ) : (
           <Link
-            href="/quiz/1"
+            href="/#tracks"
             className="nav-book-btn"
             style={{
               display: "inline-flex",
@@ -126,7 +128,7 @@ export default function Header({ moduleTitle }: { moduleTitle?: string }) {
               (e.currentTarget as HTMLAnchorElement).style.background = "transparent";
             }}
           >
-            Start the full practice test
+            Choose your exam
           </Link>
         )}
       </div>

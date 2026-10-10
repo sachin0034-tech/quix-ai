@@ -1,138 +1,216 @@
 "use client";
 
 import { useParams, useRouter } from "next/navigation";
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
-import type { OptionLabel, Question, QuizModule } from "@/types/quiz";
-import { saveResult, saveLead } from "@/lib/supabase";
-import { useQuizModules } from "@/lib/use-quiz-modules";
-import { formatAnswer, isCorrectAnswer, parseAnswer, requiredPicks } from "@/lib/answers";
-import { drawQuizQuestions } from "@/lib/quiz-sampling";
+import type { CheckResult, OptionLabel, PublicQuestion } from "@/types/quiz";
+import { MODES, TRACKS } from "@/lib/blueprint";
+import { flags } from "@/lib/config";
+import { track as trackEvent } from "@/lib/analytics";
+import {
+  getAttempt,
+  getLearner,
+  getSeen,
+  getSkillHistory,
+  recordAnswer,
+  saveAttempt,
+  type StoredAnswer,
+  type StoredAttempt,
+} from "@/lib/client/store";
+import { useEmailGate } from "@/components/EmailGate";
+import TutorPanel from "@/components/TutorPanel";
 import Header from "@/components/Header";
 
 export default function QuizPage() {
-  const params = useParams();
-  const moduleId = Number(params.id);
-  const { modules, error } = useQuizModules();
-  const mod = modules?.find((m) => m.id === moduleId);
+  const params = useParams<{ id: string }>();
+  const router = useRouter();
+  const [attempt, setAttempt] = useState<StoredAttempt | null | undefined>(undefined);
 
-  if (!modules && !error) {
+  useEffect(() => {
+    const a = getAttempt(params.id);
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- hydrate from localStorage after mount
+    setAttempt(a);
+    if (a?.finishedAt) router.replace(`/results/${a.id}`);
+  }, [params.id, router]);
+
+  if (attempt === undefined || attempt?.finishedAt) {
     return (
       <main style={{ padding: "96px 48px", textAlign: "center" }}>
         <p style={{ color: "var(--muted)" }}>Loading questions…</p>
       </main>
     );
   }
-
-  if (!mod || modules!.every((m) => m.questions.length === 0)) {
+  if (attempt === null) {
     return (
       <main style={{ padding: "96px 48px", textAlign: "center" }}>
         <p style={{ color: "var(--muted)" }}>
-          {error ? "Couldn't load this module." : "Module not found."}{" "}
+          We couldn&apos;t find this attempt on this device.{" "}
           <Link href="/" style={{ color: "var(--navy)" }}>
-            Go back
+            Start a new one
           </Link>
         </p>
       </main>
     );
   }
-
-  return <QuizRunner mod={mod} modules={modules!} />;
+  return <QuizRunner attempt={attempt} />;
 }
 
-function QuizRunner({ mod, modules }: { mod: QuizModule; modules: QuizModule[] }) {
+const fmt = (ms: number) => {
+  const s = Math.max(0, Math.ceil(ms / 1000));
+  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
+};
+
+function QuizRunner({ attempt }: { attempt: StoredAttempt }) {
   const router = useRouter();
-  const moduleId = mod.id;
+  const gate = useEmailGate();
+  const trackDef = TRACKS[attempt.track];
+  const feedback = !attempt.examConditions;
 
-  // A new random set from every module each time a quiz starts
-  const [questions] = useState<Question[]>(() => drawQuizQuestions(modules));
-
-  const [answers, setAnswers] = useState<Record<number, OptionLabel[]>>({});
-  const [currentIdx, setCurrentIdx] = useState(0);
+  const [questions, setQuestions] = useState<PublicQuestion[]>(attempt.questions);
+  const [answers, setAnswers] = useState<Record<number, StoredAnswer>>(attempt.answers);
+  const [checks, setChecks] = useState<Record<number, CheckResult>>(attempt.checks);
+  const [currentIdx, setCurrentIdx] = useState(Math.min(attempt.idx, attempt.questions.length - 1));
+  const [checking, setChecking] = useState(false);
+  const [checkError, setCheckError] = useState(false);
+  const [finishing, setFinishing] = useState(false);
+  const [now, setNow] = useState(() => Date.now());
+  const shownAt = useRef(0);
 
   // Mobile carousel — tracks which option card is currently visible (0–4)
   const [visibleOptIdx, setVisibleOptIdx] = useState(0);
   const carouselRef = useRef<HTMLDivElement>(null);
 
-  // Email gate — mandatory before quiz
-  const [emailGateReady, setEmailGateReady] = useState(false);
-  const [emailGateEmail, setEmailGateEmail] = useState<string | null>(null);
-  const [emailInput, setEmailInput] = useState("");
-  const [emailError, setEmailError] = useState("");
-  const [emailLoading, setEmailLoading] = useState(false);
+  const total = attempt.total;
+  const q = questions[currentIdx];
+  const selected: OptionLabel[] = answers[q.id]?.picks ?? [];
+  const picks = q.picks;
+  const isMulti = picks > 1;
+  const isComplete = (qq: PublicQuestion) => (answers[qq.id]?.picks.length ?? 0) === qq.picks;
+  const currentComplete = selected.length === picks;
+  const check = checks[q.id];
+  // Feedback mode: the answer locks and is revealed once the server has checked it
+  const revealed = feedback && !!check;
+  const locked = revealed || checking || (feedback && currentComplete);
+  const correctLabels = check?.keys ?? [];
+  const currentCorrect = !!check?.correct;
+  const isLast = currentIdx === total - 1;
+  const isFirst = currentIdx === 0;
+  const primaryDisabled = !currentComplete || (feedback && !revealed) || checking || finishing || gate.modalOpen;
+  const primaryLabel = isLast ? "See my results →" : "Next question →";
+  const deadline = attempt.limitSeconds ? attempt.startedAt + attempt.limitSeconds * 1000 : null;
+
+  // Persist progress so a refresh resumes the attempt
+  useEffect(() => {
+    saveAttempt({ ...attempt, questions, answers, checks, idx: currentIdx });
+  }, [attempt, questions, answers, checks, currentIdx]);
 
   useEffect(() => {
-    const stored = localStorage.getItem("quix_user_email");
-    setEmailGateEmail(stored);
-    setEmailGateReady(true);
+    shownAt.current = Date.now();
+  }, [currentIdx]);
+
+  useEffect(() => {
+    trackEvent("module_started", { track: attempt.track, mode: attempt.mode, domain: attempt.domain });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const total = questions.length;
-  const q = questions[currentIdx];
-  const selected = answers[q.id] ?? [];
-  const picks = requiredPicks(q.answer);
-  const isMulti = picks > 1;
-  const isComplete = (qq: Question) =>
-    (answers[qq.id]?.length ?? 0) === requiredPicks(qq.answer);
-  // Once every pick is made the answer is checked and locked
-  const currentComplete = selected.length === picks;
-  const revealed = currentComplete;
-  const correctLabels = parseAnswer(q.answer);
-  const currentCorrect = revealed && isCorrectAnswer(selected, q.answer);
-  const isFirst = currentIdx === 0;
-  const isLast = currentIdx === total - 1;
-  const primaryDisabled = !currentComplete;
-  const primaryLabel = isLast ? "See my score →" : "Next question →";
+  const finish = useCallback(async () => {
+    if (finishing) return;
+    setFinishing(true);
+    saveAttempt({ ...attempt, questions, answers, checks, idx: currentIdx, finishedAt: Date.now() });
+    router.push(`/results/${attempt.id}`);
+  }, [finishing, attempt, questions, answers, checks, currentIdx, router]);
 
-  // Finish the quiz — save results and navigate to results page
-  async function handleFinish() {
-    // One segment per question; multi-answer picks are concatenated, e.g. "B,AC,D"
-    const answerString = questions
-      .map((qq) => (answers[qq.id] ?? []).join(""))
-      .join(",");
-    const score = questions.filter((qq) =>
-      isCorrectAnswer(answers[qq.id] ?? [], qq.answer)
-    ).length;
-    const pct = Math.round((score / total) * 100);
-
-    try {
-      const existing = JSON.parse(localStorage.getItem("aipm_scores") ?? "{}");
-      existing[String(moduleId)] = { score, total, pct };
-      localStorage.setItem("aipm_scores", JSON.stringify(existing));
-    } catch {}
-
-    const email = emailGateEmail;
-    if (email) {
-      const detailedAnswers = questions.map((qq) => ({
-        questionId: qq.id,
-        question: qq.question,
-        section: qq.section,
-        difficulty: qq.difficulty,
-        userAnswer: formatAnswer(answers[qq.id] ?? []),
-        correctAnswer: formatAnswer([qq.answer]),
-        isCorrect: isCorrectAnswer(answers[qq.id] ?? [], qq.answer),
-      }));
-      saveResult({
-        email,
-        moduleId,
-        moduleTitle: mod.title,
-        answers: JSON.stringify(detailedAnswers),
-        score,
-        total,
-      }).catch(() => {});
+  // Countdown: finishes the attempt when time runs out
+  useEffect(() => {
+    if (!deadline) return;
+    const t = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(t);
+  }, [deadline]);
+  const timeUp = !!deadline && now >= deadline;
+  useEffect(() => {
+    if (timeUp && !finishing) {
+      const t = setTimeout(() => void finish(), 2500);
+      return () => clearTimeout(t);
     }
+  }, [timeUp, finishing, finish]);
 
-    // Question ids tell the results page which random questions were asked
-    const questionIds = questions.map((qq) => qq.id).join(",");
-    router.push(`/results/${moduleId}?q=${questionIds}&a=${answerString}`);
+  async function runCheck(qq: PublicQuestion, chosen: OptionLabel[]) {
+    setChecking(true);
+    setCheckError(false);
+    try {
+      const res = await fetch("/api/check", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ seed: attempt.seed, id: qq.id, picks: chosen, learner: getLearner() }),
+      });
+      if (!res.ok) throw new Error("check failed");
+      const result = (await res.json()) as CheckResult;
+      setChecks((prev) => ({ ...prev, [qq.id]: result }));
+      recordAnswer(qq, result.correct);
+      trackEvent("question_answered", {
+        correct: result.correct,
+        domain: qq.domain,
+        subSkill: qq.subSkill,
+        seconds: Math.round((answers[qq.id]?.ms ?? 0) / 1000),
+        mode: attempt.mode,
+      });
+      gate.onAnswered();
+    } catch {
+      setCheckError(true);
+    } finally {
+      setChecking(false);
+    }
   }
 
-  function handleNext() {
-    if (!currentComplete) return;
-    if (isLast) {
-      handleFinish();
-    } else {
+  // Single-answer questions lock on the first click; multi-answer questions toggle
+  // until the required number is picked, then lock.
+  function selectAnswer(label: OptionLabel) {
+    if (locked || gate.modalOpen) return;
+    const current = answers[q.id]?.picks ?? [];
+    let next: OptionLabel[];
+    if (!isMulti) next = [label];
+    else if (current.includes(label)) next = current.filter((l) => l !== label);
+    else if (current.length >= picks) return;
+    else next = [...current, label].sort() as OptionLabel[];
+
+    const ms = (answers[q.id]?.ms ?? 0) + (next.length === picks ? Date.now() - shownAt.current : 0);
+    if (next.length === picks) shownAt.current = Date.now();
+    setAnswers((prev) => ({ ...prev, [q.id]: { picks: next, ms } }));
+    if (next.length === picks && feedback) void runCheck(q, next);
+  }
+
+  async function handleNext() {
+    if (primaryDisabled) return;
+    if (currentIdx < questions.length - 1) {
       setCurrentIdx((i) => i + 1);
+    } else if (questions.length < total) {
+      // Adaptive modes pick the next item from the learner's weakest sub-skill
+      setChecking(true);
+      try {
+        const res = await fetch("/api/next", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            seed: attempt.seed,
+            track: attempt.track,
+            domain: attempt.domain,
+            askedIds: questions.map((x) => x.id),
+            answered: [],
+            history: getSkillHistory(attempt.track),
+            seen: getSeen(),
+          }),
+        });
+        const { question } = (await res.json()) as { question: PublicQuestion | null };
+        if (!question) return void (await finish());
+        setQuestions((prev) => [...prev, question]);
+        setCurrentIdx((i) => i + 1);
+      } catch {
+        setCheckError(true);
+      } finally {
+        setChecking(false);
+      }
+    } else {
+      await finish();
     }
   }
 
@@ -140,18 +218,11 @@ function QuizRunner({ mod, modules }: { mod: QuizModule; modules: QuizModule[] }
     if (!isFirst) setCurrentIdx((i) => i - 1);
   }
 
-  // Single-answer questions lock on the first click; multi-answer questions toggle
-  // until the required number is picked, then lock.
-  function selectAnswer(label: OptionLabel) {
-    setAnswers((prev) => {
-      const current = prev[q.id] ?? [];
-      if (current.length >= picks) return prev;
-      if (!isMulti) return { ...prev, [q.id]: [label] };
-      if (current.includes(label)) {
-        return { ...prev, [q.id]: current.filter((l) => l !== label) };
-      }
-      return { ...prev, [q.id]: [...current, label].sort() as OptionLabel[] };
-    });
+  function handleFinishEarly() {
+    const answered = questions.filter(isComplete).length;
+    const missing = total - answered;
+    if (missing > 0 && !window.confirm(`${missing} question${missing === 1 ? " is" : "s are"} unanswered and will count as incorrect. Finish now?`)) return;
+    void finish();
   }
 
   // Mobile carousel helpers
@@ -171,6 +242,9 @@ function QuizRunner({ mod, modules }: { mod: QuizModule; modules: QuizModule[] }
   // Keyboard handler
   const handleKeyDown = useCallback(
     (e: KeyboardEvent) => {
+      if (gate.modalOpen) return;
+      const target = e.target as HTMLElement | null;
+      if (target && /^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName)) return;
       const optionLabels: OptionLabel[] = ["A", "B", "C", "D"];
       if (["1", "2", "3", "4"].includes(e.key)) {
         e.preventDefault();
@@ -178,17 +252,17 @@ function QuizRunner({ mod, modules }: { mod: QuizModule; modules: QuizModule[] }
         if (label) selectAnswer(label);
       } else if (e.key === "Enter") {
         e.preventDefault();
-        handleNext();
+        void handleNext();
       } else if (e.key === "ArrowLeft") {
         e.preventDefault();
         if (!isFirst) setCurrentIdx((i) => i - 1);
-      } else if (e.key === "ArrowRight" && !isLast) {
+      } else if (e.key === "ArrowRight" && currentIdx < questions.length - 1) {
         e.preventDefault();
-        if (currentComplete && !isLast) setCurrentIdx((i) => i + 1);
+        if (!primaryDisabled) setCurrentIdx((i) => i + 1);
       }
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [q, isFirst, isLast, currentComplete, answers]
+    [q, isFirst, currentComplete, answers, checks, checking, finishing, questions.length, gate.modalOpen]
   );
 
   useEffect(() => {
@@ -198,7 +272,9 @@ function QuizRunner({ mod, modules }: { mod: QuizModule; modules: QuizModule[] }
 
   // Reset carousel to first card when question changes
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- reset transient UI when the question changes
     setVisibleOptIdx(0);
+    setCheckError(false);
     if (carouselRef.current) carouselRef.current.scrollLeft = 0;
   }, [currentIdx]);
 
@@ -206,7 +282,7 @@ function QuizRunner({ mod, modules }: { mod: QuizModule; modules: QuizModule[] }
   function segmentState(i: number) {
     const qq = questions[i];
     if (i === currentIdx) return "current";
-    if (isComplete(qq)) return "answered";
+    if (qq && isComplete(qq)) return "answered";
     return "default";
   }
 
@@ -290,137 +366,12 @@ function QuizRunner({ mod, modules }: { mod: QuizModule; modules: QuizModule[] }
     };
   }
 
-  async function handleEmailGateSubmit(e: React.FormEvent) {
-    e.preventDefault();
-    const trimmed = emailInput.trim().toLowerCase();
-    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(trimmed)) {
-      setEmailError("Please enter a valid email address.");
-      return;
-    }
-    setEmailLoading(true);
-    setEmailError("");
-    await saveLead(trimmed);
-    localStorage.setItem("quix_user_email", trimmed);
-    setEmailGateEmail(trimmed);
-    setEmailLoading(false);
-  }
+  const modeTitle = `${trackDef.short} · ${MODES[attempt.mode].title}${attempt.domain ? `: ${attempt.domain}` : ""}`;
+  const remaining = deadline ? deadline - now : null;
 
   return (
     <>
-      {/* Mandatory email gate — covers everything until email is provided */}
-      {(!emailGateReady || !emailGateEmail) && (
-        <div
-          style={{
-            position: "fixed",
-            inset: 0,
-            zIndex: 9999,
-            background: "var(--canvas)",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            padding: "24px",
-          }}
-        >
-          {emailGateReady && (
-            <div
-              style={{
-                background: "#fff",
-                borderRadius: "var(--r-feature)",
-                padding: "48px",
-                maxWidth: "480px",
-                width: "100%",
-                boxShadow: "var(--shadow-feature)",
-              }}
-            >
-              {/* Icon */}
-              <div
-                style={{
-                  width: "52px",
-                  height: "52px",
-                  borderRadius: "14px",
-                  background: "var(--wash)",
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  marginBottom: "24px",
-                }}
-              >
-                <svg width="24" height="24" viewBox="0 0 24 24" fill="none">
-                  <path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z" stroke="#002862" strokeWidth="1.6" strokeLinejoin="round" />
-                  <path d="M22 6l-10 7L2 6" stroke="#002862" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
-                </svg>
-              </div>
-
-              <div style={{ display: "flex", alignItems: "center", gap: "7px", marginBottom: "12px" }}>
-                <div style={{ width: "7px", height: "7px", borderRadius: "2px", background: "var(--navy)" }} />
-                <span style={{ fontSize: "12px", fontWeight: 600, letterSpacing: "0.6px", textTransform: "uppercase" as const, color: "var(--muted)" }}>
-                  Claude Certification · Module Assessment
-                </span>
-              </div>
-
-              <h2 style={{ fontSize: "26px", fontWeight: 700, color: "var(--ink)", margin: "0 0 10px", lineHeight: 1.25, letterSpacing: "-0.02em" }}>
-                Before we begin
-              </h2>
-              <p style={{ fontSize: "15px", lineHeight: 1.6, color: "var(--muted)", margin: "0 0 28px" }}>
-                Enter your work email to start the assessment. Your results will be tracked so our team can give you personalised feedback.
-              </p>
-
-              <form onSubmit={handleEmailGateSubmit}>
-                <label style={{ display: "block", fontSize: "13px", fontWeight: 600, color: "var(--ink)", marginBottom: "8px" }}>
-                  Email address
-                </label>
-                <input
-                  type="email"
-                  placeholder="you@company.com"
-                  value={emailInput}
-                  onChange={(e) => { setEmailInput(e.target.value); setEmailError(""); }}
-                  autoFocus
-                  style={{
-                    width: "100%",
-                    padding: "13px 16px",
-                    borderRadius: "var(--r-input)",
-                    border: emailError ? "1.5px solid var(--incorrect-text)" : "1.5px solid var(--border)",
-                    fontSize: "15px",
-                    color: "var(--ink)",
-                    outline: "none",
-                    boxSizing: "border-box" as const,
-                    background: "#fff",
-                    fontFamily: "inherit",
-                  }}
-                />
-                {emailError && (
-                  <p style={{ fontSize: "13px", color: "var(--incorrect-text)", marginTop: "6px", marginBottom: 0 }}>
-                    {emailError}
-                  </p>
-                )}
-                <button
-                  type="submit"
-                  disabled={emailLoading}
-                  style={{
-                    marginTop: "16px",
-                    width: "100%",
-                    padding: "14px",
-                    borderRadius: "var(--r-card)",
-                    border: "none",
-                    background: "var(--navy)",
-                    color: "#fff",
-                    fontSize: "16px",
-                    fontWeight: 600,
-                    cursor: emailLoading ? "not-allowed" : "pointer",
-                    opacity: emailLoading ? 0.7 : 1,
-                    fontFamily: "inherit",
-                    letterSpacing: "-0.01em",
-                  }}
-                >
-                  {emailLoading ? "Saving…" : "Start Assessment →"}
-                </button>
-              </form>
-            </div>
-          )}
-        </div>
-      )}
-
-      <Header moduleTitle={mod.title} />
+      <Header moduleTitle={modeTitle} />
 
       <div
         style={{
@@ -452,7 +403,7 @@ function QuizRunner({ mod, modules }: { mod: QuizModule; modules: QuizModule[] }
               }}
             >
               <Link
-                href="/"
+                href={`/${attempt.track}`}
                 style={{
                   fontSize: "14px",
                   color: "var(--on-navy-2)",
@@ -460,9 +411,27 @@ function QuizRunner({ mod, modules }: { mod: QuizModule; modules: QuizModule[] }
                   flexShrink: 0,
                 }}
               >
-                ← All tracks
+                ← All modules
               </Link>
               <div style={{ flex: 1 }} />
+              {remaining !== null && (
+                <span
+                  role="timer"
+                  aria-label={`Time remaining ${fmt(remaining)}`}
+                  style={{
+                    fontSize: "14px",
+                    fontWeight: 700,
+                    color: remaining < 300_000 ? "var(--accent)" : "#ffffff",
+                    background: "rgba(255,255,255,.12)",
+                    borderRadius: "var(--r-pill)",
+                    padding: "4px 12px",
+                    whiteSpace: "nowrap",
+                    fontVariantNumeric: "tabular-nums",
+                  }}
+                >
+                  ⏱ {fmt(remaining)}
+                </span>
+              )}
               <span
                 style={{
                   fontSize: "14px",
@@ -473,6 +442,12 @@ function QuizRunner({ mod, modules }: { mod: QuizModule; modules: QuizModule[] }
                 {questions.filter(isComplete).length} of {total} answered
               </span>
             </div>
+
+            {attempt.examConditions && (
+              <p style={{ margin: "-8px 0 14px", fontSize: "13px", color: "var(--on-navy-2)" }}>
+                Exam conditions: feedback is hidden until you finish.
+              </p>
+            )}
 
             {/* Segmented progress */}
             <div
@@ -488,19 +463,19 @@ function QuizRunner({ mod, modules }: { mod: QuizModule; modules: QuizModule[] }
                 height: "16px",
               }}
             >
-              {questions.map((_, i) => {
+              {Array.from({ length: total }, (_, i) => {
                 const state = segmentState(i);
                 return (
                   <div
                     key={i}
-                    onClick={() => setCurrentIdx(i)}
+                    onClick={() => questions[i] && setCurrentIdx(i)}
                     style={{
                       flex: 1,
                       borderRadius: "var(--r-pill)",
                       background: segmentColors[state],
                       height: state === "current" ? "8px" : "4px",
                       transition: "background 0.2s, height 0.2s",
-                      cursor: "pointer",
+                      cursor: questions[i] ? "pointer" : "default",
                     }}
                   />
                 );
@@ -551,7 +526,7 @@ function QuizRunner({ mod, modules }: { mod: QuizModule; modules: QuizModule[] }
                   {String(currentIdx + 1).padStart(2, "0")}
                 </span>
                 <span style={{ fontSize: "14px", color: "var(--muted)" }}>
-                  Question {currentIdx + 1} of {total} · {q.section}
+                  Question {currentIdx + 1} of {total} · {q.domain}
                 </span>
               </div>
 
@@ -595,12 +570,12 @@ function QuizRunner({ mod, modules }: { mod: QuizModule; modules: QuizModule[] }
                       letterSpacing: "0.02em",
                     }}
                   >
-                    Multi-select
+                    Select {picks}
                   </span>
                   <span>
                     {revealed
-                      ? `This question has ${picks} correct answers.`
-                      : `This question has ${picks} correct answers. Select ${picks} options (${selected.length} of ${picks} selected). Your answer is checked once all ${picks} are picked.`}
+                      ? `This question has ${picks} correct answers, and it is scored all-or-nothing.`
+                      : `Select ${picks} options (${selected.length} of ${picks} selected).${feedback ? ` Your answer is checked once all ${picks} are picked.` : ""}`}
                   </span>
                 </p>
               )}
@@ -617,7 +592,7 @@ function QuizRunner({ mod, modules }: { mod: QuizModule; modules: QuizModule[] }
                     <button
                       key={opt.label}
                       onClick={() => selectAnswer(opt.label)}
-                      disabled={revealed}
+                      disabled={locked}
                       aria-pressed={selected.includes(opt.label)}
                       className={`option-btn${state === "selected" ? " option-selected" : ""}${revealed ? " option-answered" : ""}`}
                       style={{
@@ -691,7 +666,7 @@ function QuizRunner({ mod, modules }: { mod: QuizModule; modules: QuizModule[] }
                       <div key={opt.label} className="mobile-option-slide">
                         <button
                           onClick={() => selectAnswer(opt.label)}
-                          disabled={revealed}
+                          disabled={locked}
                           aria-pressed={selected.includes(opt.label)}
                           className="mobile-option-card"
                           style={styles.wrapper as React.CSSProperties}
@@ -766,22 +741,57 @@ function QuizRunner({ mod, modules }: { mod: QuizModule; modules: QuizModule[] }
 
               {/* Answer feedback */}
               <div aria-live="polite">
-                {revealed && (
-                  <div
-                    style={{
-                      marginTop: "20px",
-                      padding: "12px 16px",
-                      borderRadius: "var(--r-option)",
-                      background: currentCorrect ? "var(--correct-bg)" : "var(--incorrect-bg)",
-                      color: currentCorrect ? "var(--correct-text)" : "var(--incorrect-text)",
-                      fontSize: "15px",
-                      fontWeight: 600,
-                    }}
-                  >
-                    {currentCorrect
-                      ? "✓ Correct!"
-                      : `✗ Incorrect. The correct answer${correctLabels.length > 1 ? "s are" : " is"} ${correctLabels.join(" and ")}.`}
-                  </div>
+                {revealed && check && (
+                  <>
+                    <div
+                      style={{
+                        marginTop: "20px",
+                        padding: "12px 16px",
+                        borderRadius: "var(--r-option)",
+                        background: currentCorrect ? "var(--correct-bg)" : "var(--incorrect-bg)",
+                        color: currentCorrect ? "#14532d" : "#991b1b",
+                        fontSize: "15px",
+                        fontWeight: 600,
+                      }}
+                    >
+                      {currentCorrect
+                        ? "✓ Correct!"
+                        : `✗ Incorrect. The correct answer${correctLabels.length > 1 ? "s are" : " is"} ${correctLabels.join(" and ")}.`}
+                    </div>
+                    <div
+                      style={{
+                        marginTop: "12px",
+                        padding: "14px 16px",
+                        borderRadius: "var(--r-option)",
+                        background: "var(--canvas)",
+                        border: "1px solid var(--border)",
+                        fontSize: "15px",
+                        lineHeight: 1.65,
+                        color: "var(--ink)",
+                      }}
+                    >
+                      <strong style={{ display: "block", marginBottom: "4px", fontSize: "13px", letterSpacing: ".4px", textTransform: "uppercase", color: "var(--muted)" }}>
+                        Explanation
+                      </strong>
+                      {check.explanation}
+                    </div>
+                    {flags.tutor && <TutorPanel key={q.id} question={q} seed={attempt.seed} answered />}
+                  </>
+                )}
+                {!feedback && currentComplete && (
+                  <p style={{ marginTop: "16px", fontSize: "14px", color: "var(--muted)" }}>Answer saved. You can change it until you finish.</p>
+                )}
+                {checking && !revealed && <p style={{ marginTop: "16px", fontSize: "14px", color: "var(--muted)" }}>Checking…</p>}
+                {checkError && (
+                  <p role="alert" style={{ marginTop: "16px", fontSize: "14px", color: "var(--incorrect-text)" }}>
+                    ✗ Couldn&apos;t reach the server.{" "}
+                    <button
+                      onClick={() => (currentComplete && feedback && !check ? void runCheck(q, selected) : void handleNext())}
+                      style={{ background: "none", border: "none", color: "var(--navy)", textDecoration: "underline", cursor: "pointer", fontFamily: "inherit", fontSize: "14px" }}
+                    >
+                      Retry
+                    </button>
+                  </p>
                 )}
               </div>
 
@@ -818,9 +828,9 @@ function QuizRunner({ mod, modules }: { mod: QuizModule; modules: QuizModule[] }
                   ← Back
                 </button>
 
-                {/* Next / See my score */}
+                {/* Next only appears once the answer has been checked (feedback mode) */}
                 <button
-                  onClick={handleNext}
+                  onClick={() => void handleNext()}
                   disabled={primaryDisabled}
                   className="quiz-primary-btn"
                   style={{
@@ -856,18 +866,33 @@ function QuizRunner({ mod, modules }: { mod: QuizModule; modules: QuizModule[] }
               </div>
             </div>
 
-            {/* Below card: keyboard hint */}
-            <div style={{ marginTop: "16px", textAlign: "center" }}>
+            {/* Below card: keyboard hint + finish early */}
+            <div style={{ marginTop: "16px", textAlign: "center", display: "grid", gap: "8px" }}>
               <span
                 className="quiz-keyboard-hint"
-                style={{ fontSize: "12px", color: "var(--faint)" }}
+                style={{ fontSize: "12px", color: "var(--muted)" }}
               >
                 Use 1–4 to select · Enter to advance · ← → navigate
               </span>
+              <button
+                onClick={handleFinishEarly}
+                style={{ background: "none", border: "none", color: "var(--muted)", textDecoration: "underline", cursor: "pointer", fontSize: "13px", fontFamily: "inherit" }}
+              >
+                Finish and see results
+              </button>
             </div>
           </div>
         </div>
       </div>
+
+      {timeUp && (
+        <div role="alertdialog" aria-modal="true" aria-label="Time is up" style={{ position: "fixed", inset: 0, zIndex: 9000, background: "rgba(15,27,51,.8)", display: "grid", placeItems: "center", padding: "24px" }}>
+          <div style={{ background: "#fff", borderRadius: "var(--r-feature)", padding: "32px", maxWidth: "420px", textAlign: "center" }}>
+            <h2 style={{ margin: "0 0 8px", fontSize: "24px" }}>Time&apos;s up</h2>
+            <p style={{ margin: 0, color: "var(--muted)" }}>Unanswered questions count as incorrect. Taking you to your results…</p>
+          </div>
+        </div>
+      )}
     </>
   );
 }

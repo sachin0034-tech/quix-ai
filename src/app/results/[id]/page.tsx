@@ -1,932 +1,507 @@
 "use client";
 
-import { useParams, useSearchParams } from "next/navigation";
-import { Suspense, useState } from "react";
+import { useParams, useRouter } from "next/navigation";
+import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
-import { domainData } from "@/lib/domain-data";
-import type { QuizModule } from "@/types/quiz";
-import { saveLead } from "@/lib/supabase";
-import { useQuizModules } from "@/lib/use-quiz-modules";
-import { formatAnswer, isCorrectAnswer, parseAnswer } from "@/lib/answers";
-import { getStoredEmail } from "@/components/EmailGate";
+import type { ResultSummary } from "@/types/quiz";
+import { MODES, TRACKS } from "@/lib/blueprint";
+import { COURSE_URL, PASS_SCORE, READY_SCORE, SCORE_MAX, SCORE_MIN } from "@/lib/config";
+import { READY_PCT, isReady, readinessLabel } from "@/lib/scoring";
+import type { StudyPlan } from "@/lib/study-plan";
+import {
+  addHistory,
+  fullMockReadiness,
+  getAttempt,
+  getEmail,
+  getLearner,
+  saveAttempt,
+  getProfile,
+  recordAnswer,
+  type StoredAttempt,
+} from "@/lib/client/store";
+import { startAttempt } from "@/lib/client/start";
+import { track as trackEvent } from "@/lib/analytics";
+import { useEmailGate } from "@/components/EmailGate";
+import BookingCTA from "@/components/BookingCTA";
 import Header from "@/components/Header";
 
-const EMAIL_KEY = "quix_user_email";
-const COHORT_URL = "https://maven.com/mahesh-yadav/genaipm";
+const btnOutline: React.CSSProperties = {
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "center",
+  padding: "14px 18px",
+  border: "1px solid #dce3ed",
+  borderRadius: "9px",
+  background: "white",
+  color: "#071b39",
+  fontWeight: 700,
+  fontSize: "15px",
+  cursor: "pointer",
+  fontFamily: "inherit",
+  textDecoration: "none",
+  minHeight: "52px",
+  lineHeight: 1.3,
+};
+const btnDark: React.CSSProperties = { ...btnOutline, width: "100%", border: "none", background: "#071b39", color: "white", marginTop: "12px" };
+const h2: React.CSSProperties = {
+  fontFamily: "var(--font-manrope), sans-serif",
+  fontSize: "20px",
+  fontWeight: 800,
+  letterSpacing: "-0.025em",
+  color: "#071b39",
+  margin: "36px 0 10px",
+};
 
-// ── Score preview + email gate + learning plan ────────────────────────────
-function ResultsContent() {
-  const params = useParams();
-  const moduleId = Number(params.id);
-  const { modules, error } = useQuizModules();
-  const mod = modules?.find((m) => m.id === moduleId);
+export default function ResultsPage() {
+  const { id } = useParams<{ id: string }>();
+  const [attempt, setAttempt] = useState<StoredAttempt | null | undefined>(undefined);
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- hydrate from localStorage after mount
+    setAttempt(getAttempt(id));
+  }, [id]);
 
-  if (!modules && !error) {
+  if (attempt === undefined) return <Message>Loading results…</Message>;
+  if (attempt === null)
     return (
-      <div style={{ padding: "96px 48px", textAlign: "center", color: "var(--muted)" }}>
-        Loading results…
-      </div>
+      <Message>
+        We couldn&apos;t find these results on this device.{" "}
+        <Link href="/" style={{ color: "var(--navy)" }}>
+          Go back
+        </Link>
+      </Message>
     );
-  }
-
-  if (!modules || !mod) {
-    return (
-      <main style={{ padding: "96px 48px", textAlign: "center" }}>
-        <p style={{ color: "var(--muted)" }}>
-          {error ? "Couldn't load this module." : "Module not found."}{" "}
-          <Link href="/" style={{ color: "var(--navy)" }}>
-            Go back
-          </Link>
-        </p>
-      </main>
-    );
-  }
-
-  return <ResultsView mod={mod} modules={modules} />;
+  return <Results attempt={attempt} />;
 }
 
-function ResultsView({ mod, modules }: { mod: QuizModule; modules: QuizModule[] }) {
-  const searchParams = useSearchParams();
+function Message({ children }: { children: React.ReactNode }) {
+  return (
+    <main style={{ padding: "96px 48px", textAlign: "center" }}>
+      <p style={{ color: "var(--muted)" }}>{children}</p>
+    </main>
+  );
+}
 
-  const [showLearningPlan, setShowLearningPlan] = useState(false);
-  const [email, setEmail] = useState(getStoredEmail() ?? "");
-  const [optIn, setOptIn] = useState(false);
-  const [emailError, setEmailError] = useState("");
-  const [emailLoading, setEmailLoading] = useState(false);
+function Results({ attempt }: { attempt: StoredAttempt }) {
+  const router = useRouter();
+  const gate = useEmailGate();
+  const [result, setResult] = useState<ResultSummary | null>(null);
+  const [error, setError] = useState(false);
+  const [plan, setPlan] = useState<StudyPlan | null>(null);
+  const [planLoading, setPlanLoading] = useState(false);
+  const [reportUrl, setReportUrl] = useState<string | null>(null);
+  const [starting, setStarting] = useState<string | null>(null);
+  const [pdfBusy, setPdfBusy] = useState(false);
+  const [ready, setReady] = useState(false);
+  const generated = useRef(false);
+  const [openedAt] = useState(() => Date.now());
 
-  // One segment per question: "B", "AC" for multi-answer, "?" for not sure, "" for skipped
-  const rawAnswers = searchParams.get("a") ?? "";
-  const userAnswers = rawAnswers.split(",").map((a) => a.trim());
+  const request = {
+    seed: attempt.seed,
+    track: attempt.track,
+    mode: attempt.mode,
+    domain: attempt.domain,
+    questionIds: attempt.questions.map((q) => q.id),
+    answers: Object.entries(attempt.answers).map(([qid, a]) => ({ id: Number(qid), picks: a.picks, ms: a.ms })),
+    totalSeconds: Math.round(((attempt.finishedAt ?? openedAt) - attempt.startedAt) / 1000),
+  };
 
-  // Which questions were asked: the random draw's ids ("q"), or the module's own
-  // questions for result links created before quizzes were randomised
-  const byId = new Map(modules.flatMap((m) => m.questions).map((q) => [q.id, q]));
-  const askedIds = (searchParams.get("q") ?? "").split(",").filter(Boolean).map(Number);
-  const asked = askedIds.length
-    ? askedIds.flatMap((id, i) => {
-        const q = byId.get(id);
-        return q ? [{ q, answer: userAnswers[i] }] : [];
+  const email = gate.email ?? (typeof window !== "undefined" ? getEmail() : null);
+  const fail = !!result && result.readiness !== null && result.readiness < PASS_SCORE;
+
+  // 1. Score the attempt on the server (the browser never decides its own score)
+  useEffect(() => {
+    if (generated.current) return;
+    generated.current = true;
+    const started = Date.now();
+    // Exam-conditions attempts were not checked per question: the server records their misses once
+    const record = attempt.examConditions && !attempt.recordedAt;
+    fetch("/api/results", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...request, learner: getLearner(), record }) })
+      .then((r) => (r.ok ? r.json() : Promise.reject()))
+      .then(({ result: res }: { result: ResultSummary }) => {
+        setResult(res);
+        // Exam-conditions attempts were not checked per question, so learn from the result now
+        if (attempt.examConditions) {
+          const missed = new Set(res.missed.map((m) => m.id));
+          attempt.questions.forEach((q) => recordAnswer(q, !missed.has(q.id) && !!attempt.answers[q.id]));
+        }
+        if (record) saveAttempt({ ...attempt, recordedAt: Date.now() });
+        addHistory(attempt.track, { id: attempt.id, mode: attempt.mode, readiness: res.readiness, pct: res.pct, at: Date.now() });
+        setReady(isReady(fullMockReadiness(attempt.track)));
+        trackEvent("module_completed", { track: res.track, mode: res.mode, score: res.correct, total: res.total, readiness: res.readiness });
+        if (res.readiness !== null && res.readiness < PASS_SCORE) {
+          trackEvent("fail_report_generated", { track: res.track, readiness: res.readiness, ms: Date.now() - started });
+        }
       })
-    : mod.questions.map((q, i) => ({ q, answer: userAnswers[i] }));
+      .catch(() => setError(true));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
-  // ── Score calculation ──────────────────────────────────────────────────
-  const results = asked.map(({ q, answer }) => ({
-    id: q.id,
-    questionText: q.question,
-    section: q.section,
-    difficulty: q.difficulty,
-    userAnswer: answer === "?" ? "?" : formatAnswer([answer ?? ""]),
-    correctAnswer: formatAnswer([q.answer]),
-    isCorrect: answer !== "?" && isCorrectAnswer(answer ?? "", q.answer),
-    options: q.options,
-  }));
+  // 2. Study plan + stored report (needed for the advisor link) once we know it's a fail
+  useEffect(() => {
+    if (!result) return;
+    let cancelled = false;
+    (async () => {
+      let p: StudyPlan | null = null;
+      if (fail && email) {
+        setPlanLoading(true);
+        try {
+          const res = await fetch("/api/study-plan", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ request, examDate: getProfile().examDate ?? null, readyStreak: isReady(fullMockReadiness(attempt.track)) }),
+          });
+          if (res.ok) p = ((await res.json()) as { plan: StudyPlan }).plan;
+        } catch {
+          /* the report still works without the AI wording */
+        }
+        if (!cancelled) {
+          setPlan(p);
+          setPlanLoading(false);
+        }
+      }
+      try {
+        const res = await fetch("/api/attempts", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ request, email, name: getProfile().name ?? null, examDate: getProfile().examDate ?? null, plan: p }),
+        });
+        if (res.ok && !cancelled) setReportUrl(((await res.json()) as { reportUrl: string }).reportUrl);
+      } catch {
+        /* storing the report is best effort */
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [result, email]);
 
-  const score = results.filter((r) => r.isCorrect).length;
-  const total = results.length;
-  const scaledScore = Math.round((score / total) * 100);
-
-  // ── Domain scores ──────────────────────────────────────────────────────
-  const domainMap = new Map<string, { correct: number; total: number }>();
-  results.forEach((r) => {
-    const existing = domainMap.get(r.section) ?? { correct: 0, total: 0 };
-    domainMap.set(r.section, {
-      correct: existing.correct + (r.isCorrect ? 1 : 0),
-      total: existing.total + 1,
-    });
-  });
-
-  const domains = Array.from(domainMap.entries()).map(([name, { correct, total: dt }]) => ({
-    name,
-    correct,
-    total: dt,
-    pct: correct / dt,
-    info: domainData[name] ?? {
-      exercise: "Review the questions in this area and identify patterns in what you missed.",
-      relatedTopics: ["Review course materials for this topic"],
-    },
-  }));
-
-  // Sort weakest first (ascending pct)
-  const sortedDomains = [...domains].sort((a, b) => a.pct - b.pct);
-  const weakest = sortedDomains[0];
-  const allPerfect = score === total;
-  const missed = results.filter((r) => !r.isCorrect);
-
-  // ── Email submit ───────────────────────────────────────────────────────
-  async function handleEmailSubmit(e: React.FormEvent) {
-    e.preventDefault();
-    const trimmed = email.trim().toLowerCase();
-    if (!trimmed || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(trimmed)) {
-      setEmailError("Please enter a valid email address.");
-      return;
+  async function again(mode: typeof attempt.mode, domain?: string) {
+    setStarting(mode);
+    const r = await startAttempt({ track: attempt.track, mode, domain });
+    if ("id" in r) router.push(`/quiz/${r.id}`);
+    else {
+      setStarting(null);
+      window.alert(r.error);
     }
-    setEmailLoading(true);
-    setEmailError("");
+  }
+
+  async function downloadPdf() {
+    setPdfBusy(true);
     try {
-      await saveLead(trimmed);
-      localStorage.setItem(EMAIL_KEY, trimmed);
-    } catch {}
-    setEmailLoading(false);
-    window.location.href = "https://calendly.com/d/d3rr-rn8-yrx/1-1-consult";
+      const res = await fetch("/api/report-pdf", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ request, name: getProfile().name ?? null, plan }),
+      });
+      if (!res.ok) throw new Error();
+      const url = URL.createObjectURL(await res.blob());
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `claude-${attempt.track}-readiness-report.pdf`;
+      a.click();
+      URL.revokeObjectURL(url);
+      trackEvent("report_pdf_downloaded", { track: attempt.track });
+    } catch {
+      window.alert("Couldn't build the PDF. Try again shortly.");
+    } finally {
+      setPdfBusy(false);
+    }
   }
 
-  // ── Score preview page ─────────────────────────────────────────────────
-  if (!showLearningPlan) {
-    const btnOutline: React.CSSProperties = {
-      display: "flex",
-      alignItems: "center",
-      justifyContent: "center",
-      padding: "14px 18px",
-      border: "1px solid #dce3ed",
-      borderRadius: "9px",
-      background: "white",
-      color: "#10213b",
-      fontWeight: 700,
-      fontSize: "15px",
-      cursor: "pointer",
-      fontFamily: "inherit",
-      textDecoration: "none",
-      minHeight: "52px",
-      lineHeight: 1.3,
-    };
-    const btnDark: React.CSSProperties = {
-      display: "flex",
-      alignItems: "center",
-      justifyContent: "center",
-      width: "100%",
-      padding: "16px 18px",
-      border: "none",
-      borderRadius: "9px",
-      background: "#071b39",
-      color: "white",
-      fontWeight: 700,
-      fontSize: "15px",
-      cursor: "pointer",
-      fontFamily: "inherit",
-      textDecoration: "none",
-      minHeight: "52px",
-      marginTop: "12px",
-      lineHeight: 1.3,
-    };
+  const trackDef = TRACKS[attempt.track];
+  const title = `${trackDef.short} · ${MODES[attempt.mode].title}`;
 
-    return (
-      <>
-        <Header moduleTitle={mod.title} />
-        <main style={{ minHeight: "calc(100vh - 88px)", background: "#ffffff" }}>
-          <div style={{ maxWidth: "660px", margin: "0 auto", padding: "28px 28px 80px" }}>
+  if (error) return <Message>Couldn&apos;t score this attempt. <Link href={`/${attempt.track}`} style={{ color: "var(--navy)" }}>Back to modules</Link></Message>;
+  if (!result) return <><Header moduleTitle={title} /><Message>Scoring your answers…</Message></>;
 
-            {/* Dialog-style header */}
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "12px", marginBottom: "18px" }}>
-              <span style={{
-                fontSize: "13px",
-                fontWeight: 800,
-                letterSpacing: ".8px",
-                color: "#214f91",
-                textTransform: "uppercase",
-                fontFamily: "var(--font-manrope), sans-serif",
-              }}>
-                CLAUDE CERTIFICATION preparation
-              </span>
-              <Link href="/" style={{
-                display: "grid",
-                placeContent: "center",
-                width: "44px",
-                height: "44px",
-                borderRadius: "50%",
-                background: "#f1f5fa",
-                color: "#10213b",
-                fontSize: "22px",
-                textDecoration: "none",
-                flexShrink: 0,
-              }}>×</Link>
-            </div>
+  const weakest = result.domains.find((d) => d.domain === result.weakestDomain);
+  const sortedDomains = [...result.domains].filter((d) => d.pct !== null).sort((a, b) => (a.pct as number) - (b.pct as number));
+  const topGaps = result.lifts.filter((l) => l.kind === "domain").slice(0, 3);
+  const unweightedWeak = result.subSkills
+    .filter((s) => s.weight === null && s.pct !== null && (s.pct as number) < READY_PCT)
+    .sort((a, b) => (a.pct as number) - (b.pct as number))
+    .slice(0, 8);
+  const readinessPos = (n: number) => `${((n - SCORE_MIN) / (SCORE_MAX - SCORE_MIN)) * 100}%`;
 
-            {/* Note box */}
-            <div style={{
-              background: "#fff4db",
-              color: "#65501f",
-              padding: "10px 13px",
-              borderRadius: "6px",
-              fontSize: "14px",
-              lineHeight: 1.6,
-              marginBottom: "22px",
-            }}>
-              Practice questions prepared for Claude certification. The email report is a
-              preview of your revision plan.
-            </div>
-
-            {/* Heading */}
-            <h1 style={{
-              fontFamily: "var(--font-manrope), sans-serif",
-              fontSize: "25px",
-              fontWeight: 800,
-              letterSpacing: "-0.025em",
-              color: "#10213b",
-              margin: "22px 0",
-              lineHeight: 1.4,
-            }}>
-              Your practice score
-            </h1>
-
-            {/* Big score % */}
-            <div style={{
-              fontSize: "62px",
-              fontWeight: 800,
-              lineHeight: 1.3,
-              letterSpacing: "-2px",
-              color: "#10213b",
-              fontFamily: "var(--font-manrope), sans-serif",
-              marginBottom: "16px",
-            }}>
-              {scaledScore}
-              <small style={{ fontSize: "20px", letterSpacing: 0, color: "var(--muted)", fontWeight: 500 }}>
-                %
-              </small>
-            </div>
-
-            {/* Description */}
-            <p style={{ fontSize: "16px", color: "#10213b", margin: "0 0 24px", lineHeight: 1.6 }}>
-              {score} of {total} correct in this session. This is practice accuracy, not
-              an official scaled exam score or pass prediction.
-            </p>
-
-            {/* Action buttons */}
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "12px" }}>
-              <Link href={`/quiz/${mod.id}`} style={btnOutline}>
-                Repeat this session
-              </Link>
-              {missed.length > 0 ? (
-                <Link href={`/quiz/${mod.id}`} style={btnOutline}>
-                  Retry missed questions
-                </Link>
-              ) : (
-                <button disabled style={{ ...btnOutline, opacity: 0.45, cursor: "not-allowed" }}>
-                  Retry missed questions
-                </button>
-              )}
-            </div>
-            <Link href="/" style={btnDark}>
-              Choose any domain
-            </Link>
-
-            {/* Email / revision report */}
-            <h2 style={{
-              fontFamily: "var(--font-manrope), sans-serif",
-              fontSize: "20px",
-              fontWeight: 800,
-              letterSpacing: "-0.025em",
-              color: "#10213b",
-              margin: "24px 0 8px",
-            }}>
-              Get your personalized revision report
-            </h2>
-            <p style={{ fontSize: "15px", color: "var(--muted)", margin: "0 0 18px", lineHeight: 1.6 }}>
-              Domains, retakes and answer explanations remain freely accessible.
-            </p>
-
-            <form onSubmit={handleEmailSubmit}>
-              <label
-                htmlFor="result-email"
-                style={{ display: "block", fontSize: "14px", fontWeight: 600, color: "#10213b", marginBottom: "8px" }}
-              >
-                Email address
-              </label>
-              <input
-                id="result-email"
-                type="email"
-                placeholder="you@company.com"
-                value={email}
-                onChange={(e) => { setEmail(e.target.value); setEmailError(""); }}
-                required
-                style={{
-                  width: "100%",
-                  border: emailError ? "1px solid var(--incorrect-text)" : "1px solid #99abc2",
-                  borderRadius: "7px",
-                  padding: "13px",
-                  fontSize: "16px",
-                  color: "#10213b",
-                  outline: "none",
-                  boxSizing: "border-box",
-                  background: "#fff",
-                  fontFamily: "inherit",
-                  transition: "border-color 0.15s",
-                }}
-                onFocus={(e) => { if (!emailError) (e.target as HTMLInputElement).style.borderColor = "#214f91"; }}
-                onBlur={(e) => { if (!emailError) (e.target as HTMLInputElement).style.borderColor = "#99abc2"; }}
-              />
-              {emailError && (
-                <p style={{ fontSize: "13px", color: "var(--incorrect-text)", margin: "6px 0 0" }}>
-                  {emailError}
-                </p>
-              )}
-
-              <label style={{ display: "flex", alignItems: "flex-start", gap: "9px", fontSize: "14px", color: "var(--muted)", marginTop: "14px", cursor: "pointer", lineHeight: 1.55 }}>
-                <input
-                  type="checkbox"
-                  checked={optIn}
-                  onChange={(e) => setOptIn(e.target.checked)}
-                  style={{ width: "18px", height: "18px", flexShrink: 0, marginTop: "2px" }}
-                />
-                Send me optional learning tips and Mahesh&apos;s cohort updates.
-              </label>
-
-              <button
-                type="submit"
-                disabled={emailLoading}
-                style={{
-                  marginTop: "16px",
-                  width: "100%",
-                  padding: "16px",
-                  borderRadius: "9px",
-                  border: "none",
-                  background: "#071b39",
-                  color: "white",
-                  fontSize: "16px",
-                  fontWeight: 700,
-                  cursor: emailLoading ? "not-allowed" : "pointer",
-                  opacity: emailLoading ? 0.7 : 1,
-                  fontFamily: "inherit",
-                  minHeight: "54px",
-                  transition: "background 0.15s",
-                }}
-              >
-                {emailLoading ? "Saving…" : "View my revision report"}
-              </button>
-
-              <p style={{ fontSize: "14px", color: "var(--muted)", textAlign: "center", marginTop: "12px" }}>
-                Preview only. This form does not collect or send your email.
-              </p>
-            </form>
-          </div>
-        </main>
-      </>
-    );
-  }
-
-  // ── Learning plan page ─────────────────────────────────────────────────
   return (
     <>
-      <Header />
-      <main style={{ minHeight: "calc(100vh - 64px)", paddingBottom: "80px" }}>
-        {/* Hero band */}
-        <section style={{ background: "var(--gradient)", padding: "40px 0 56px" }}>
-          <div style={{ maxWidth: "760px", margin: "0 auto", padding: "0 32px" }}>
-            <Link
-              href="/"
-              style={{ fontSize: "14px", color: "var(--on-navy-2)", textDecoration: "none" }}
-            >
-              ← All tracks
+      <Header moduleTitle={title} />
+      <main style={{ minHeight: "calc(100vh - 88px)", background: "#ffffff" }}>
+        <div style={{ maxWidth: "700px", margin: "0 auto", padding: "28px 28px 80px" }}>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "12px", marginBottom: "18px" }}>
+            <span style={{ fontSize: "13px", fontWeight: 800, letterSpacing: ".8px", color: "#214f91", textTransform: "uppercase", fontFamily: "var(--font-manrope), sans-serif" }}>
+              Claude Certification Practice Quiz
+            </span>
+            <Link href={`/${attempt.track}`} aria-label="Close results" style={{ display: "grid", placeContent: "center", width: "44px", height: "44px", borderRadius: "50%", background: "#f1f5fa", color: "#071b39", fontSize: "22px", textDecoration: "none", flexShrink: 0 }}>
+              ×
             </Link>
-
-            <h1
-              style={{
-                fontFamily: "var(--font-manrope), sans-serif",
-                fontSize: "clamp(26px, 3.5vw, 40px)",
-                fontWeight: 700,
-                color: "#ffffff",
-                letterSpacing: "-0.03em",
-                lineHeight: 1.15,
-                margin: "24px 0 12px",
-              }}
-            >
-              Your AI PM learning plan
-            </h1>
-
-            <p style={{ fontSize: "16px", color: "var(--on-navy-2)", margin: "0 0 28px", lineHeight: 1.6 }}>
-              {allPerfect
-                ? "You answered every scenario correctly. Deepen your skills with hands-on builds and more demanding evaluations."
-                : `Start with ${weakest.name.toLowerCase()}. It was one of your lowest-scoring areas.`}
-            </p>
-
-            {/* Score summary strip */}
-            <div
-              style={{
-                display: "flex",
-                gap: "24px",
-                alignItems: "center",
-                background: "rgba(255,255,255,.1)",
-                borderRadius: "10px",
-                padding: "14px 20px",
-                flexWrap: "wrap",
-              }}
-            >
-              <span style={{ color: "#ffffff", fontSize: "15px", fontWeight: 600 }}>
-                {scaledScore} / 100
-              </span>
-              <span style={{ color: "var(--on-navy-2)", fontSize: "14px" }}>
-                {score} correct of {total}
-              </span>
-              <span style={{ color: "var(--on-navy-2)", fontSize: "14px" }}>
-                {mod.title}
-              </span>
-            </div>
           </div>
-        </section>
 
-        {/* Domain cards */}
-        <section style={{ padding: "40px 0" }}>
-          <div style={{ maxWidth: "760px", margin: "0 auto", padding: "0 32px" }}>
-            <div style={{ display: "flex", flexDirection: "column", gap: "20px" }}>
-              {sortedDomains.map((d, i) => {
-                const isPerfect = d.correct === d.total;
-                return (
-                  <div
-                    key={d.name}
-                    className="card-enter"
-                    style={{
-                      background: "#ffffff",
-                      border: "1px solid var(--border)",
-                      borderRadius: "var(--r-feature)",
-                      padding: "28px 32px",
-                      boxShadow: "var(--shadow-card)",
-                      animationDelay: `${i * 0.07}s`,
-                    }}
-                  >
-                    {/* Domain header */}
-                    <div
-                      style={{
-                        display: "flex",
-                        alignItems: "center",
-                        justifyContent: "space-between",
-                        gap: "12px",
-                        flexWrap: "wrap",
-                        marginBottom: "16px",
-                      }}
-                    >
-                      <div>
-                        <h2
-                          style={{
-                            fontSize: "17px",
-                            fontWeight: 700,
-                            color: "var(--ink)",
-                            margin: "0 0 4px",
-                            letterSpacing: "-0.02em",
-                            fontFamily: "var(--font-manrope), sans-serif",
-                          }}
-                        >
-                          {d.name}
-                        </h2>
-                        <span
-                          style={{
-                            fontSize: "11px",
-                            fontWeight: 700,
-                            letterSpacing: "0.08em",
-                            textTransform: "uppercase",
-                            color: isPerfect ? "var(--correct-text)" : "var(--accent)",
-                          }}
-                        >
-                          {isPerfect ? "EXTEND YOUR PRACTICE" : "PRACTICE NEXT"}
-                        </span>
-                      </div>
+          <div style={{ background: "#fff4db", color: "#65501f", padding: "10px 13px", borderRadius: "6px", fontSize: "14px", lineHeight: 1.6, marginBottom: "22px" }}>
+            Estimate, not an official score. Anthropic publishes no conversion from percent correct to the 100–1,000 scale, so this is a practice estimate and not a guarantee of a pass.
+          </div>
 
-                      {/* Score pill */}
-                      <span
-                        style={{
-                          padding: "6px 16px",
-                          borderRadius: "var(--r-pill)",
-                          background: isPerfect ? "var(--correct-bg)" : "#fff3e8",
-                          color: isPerfect ? "var(--correct-text)" : "var(--accent)",
-                          fontSize: "15px",
-                          fontWeight: 700,
-                          whiteSpace: "nowrap",
-                          fontFamily: "var(--font-manrope), sans-serif",
-                        }}
-                      >
-                        {d.correct}/{d.total}
-                      </span>
-                    </div>
+          <h1 style={{ fontFamily: "var(--font-manrope), sans-serif", fontSize: "25px", fontWeight: 800, letterSpacing: "-0.025em", color: "#071b39", margin: "22px 0 4px", lineHeight: 1.4 }}>
+            {result.readiness !== null ? "Your readiness estimate" : "Your practice summary"}
+          </h1>
 
-                    {/* Progress bar */}
-                    <div
-                      style={{
-                        height: "6px",
-                        background: "#eaf0f7",
-                        borderRadius: "3px",
-                        overflow: "hidden",
-                        marginBottom: "20px",
-                      }}
-                    >
-                      <div
-                        style={{
-                          height: "100%",
-                          width: `${d.pct * 100}%`,
-                          background: isPerfect ? "var(--correct-text)" : "var(--accent)",
-                          borderRadius: "3px",
-                          transition: "width 0.6s ease",
-                        }}
-                      />
-                    </div>
+          {result.readiness !== null ? (
+            <>
+              <div style={{ fontSize: "62px", fontWeight: 800, lineHeight: 1.2, letterSpacing: "-2px", color: "#071b39", fontFamily: "var(--font-manrope), sans-serif" }}>
+                {result.readiness}
+                <small style={{ fontSize: "20px", letterSpacing: 0, color: "var(--muted)", fontWeight: 500 }}> / 1000</small>
+                <span style={{ marginLeft: "14px", verticalAlign: "middle", fontSize: "14px", fontWeight: 700, letterSpacing: 0, padding: "4px 12px", borderRadius: "var(--r-pill)", background: result.readiness >= PASS_SCORE ? "var(--correct-bg)" : "var(--incorrect-bg)", color: result.readiness >= PASS_SCORE ? "var(--correct-text)" : "var(--incorrect-text)" }}>
+                  {result.readiness >= PASS_SCORE ? "✓" : "✗"} {readinessLabel(result.readiness)}
+                </span>
+              </div>
 
-                    {/* Exercise */}
-                    <div style={{ marginBottom: "20px" }}>
-                      <p
-                        style={{
-                          fontSize: "11px",
-                          fontWeight: 700,
-                          letterSpacing: "0.08em",
-                          textTransform: "uppercase",
-                          color: "var(--muted)",
-                          margin: "0 0 8px",
-                        }}
-                      >
-                        Learning exercise
-                      </p>
-                      <p
-                        style={{
-                          fontSize: "14px",
-                          lineHeight: 1.65,
-                          color: "var(--ink-2)",
-                          margin: 0,
-                        }}
-                      >
-                        {d.info.exercise}
-                      </p>
-                    </div>
-
-                    {/* Related topics */}
-                    <div>
-                      <p
-                        style={{
-                          fontSize: "11px",
-                          fontWeight: 700,
-                          letterSpacing: "0.08em",
-                          textTransform: "uppercase",
-                          color: "var(--muted)",
-                          margin: "0 0 10px",
-                        }}
-                      >
-                        Related cohort topics
-                      </p>
-                      <div style={{ display: "flex", flexWrap: "wrap", gap: "8px" }}>
-                        {d.info.relatedTopics.map((topic) => (
-                          <span
-                            key={topic}
-                            style={{
-                              padding: "5px 14px",
-                              borderRadius: "var(--r-pill)",
-                              background: "var(--canvas)",
-                              border: "1px solid var(--border)",
-                              color: "var(--ink-2)",
-                              fontSize: "13px",
-                              fontWeight: 500,
-                            }}
-                          >
-                            {topic}
-                          </span>
-                        ))}
-                      </div>
-                    </div>
+              {/* Scale 100–1000 with the 720 pass line and 800 ready line */}
+              <div style={{ position: "relative", height: "10px", borderRadius: "var(--r-pill)", background: "#e2e7f0", margin: "20px 0 34px" }} role="img" aria-label={`Estimate ${result.readiness} on a scale of 100 to 1000; pass line ${PASS_SCORE}`}>
+                <div style={{ position: "absolute", inset: 0, width: readinessPos(result.readiness), borderRadius: "var(--r-pill)", background: result.readiness >= PASS_SCORE ? "var(--correct-text)" : "var(--incorrect-text)" }} />
+                {[{ v: PASS_SCORE, l: `Pass ${PASS_SCORE}` }, { v: READY_SCORE, l: `Ready ${READY_SCORE}` }].map((m) => (
+                  <div key={m.v} style={{ position: "absolute", left: readinessPos(m.v), top: "-4px", bottom: "-4px", width: "2px", background: "#071b39" }}>
+                    <span style={{ position: "absolute", top: "18px", left: m.v === PASS_SCORE ? "auto" : "6px", right: m.v === PASS_SCORE ? "6px" : "auto", fontSize: "12px", fontWeight: 700, whiteSpace: "nowrap" }}>{m.l}</span>
                   </div>
-                );
-              })}
-            </div>
+                ))}
+              </div>
 
-            {/* Cohort CTA */}
-            <div
-              style={{
-                marginTop: "40px",
-                padding: "36px 32px",
-                background: "var(--gradient)",
-                borderRadius: "var(--r-feature)",
-                textAlign: "center",
-              }}
-            >
-              <h2
-                style={{
-                  fontSize: "22px",
-                  fontWeight: 700,
-                  color: "#ffffff",
-                  margin: "0 0 10px",
-                  letterSpacing: "-0.02em",
-                  fontFamily: "var(--font-manrope), sans-serif",
-                }}
-              >
-                Want guided, hands-on practice?
-              </h2>
-              <p
-                style={{
-                  fontSize: "15px",
-                  color: "var(--on-navy-2)",
-                  margin: "0 0 28px",
-                  lineHeight: 1.6,
-                  maxWidth: "440px",
-                  marginLeft: "auto",
-                  marginRight: "auto",
-                }}
-              >
-                Explore how Mahesh&apos;s cohort covers these areas, including Claude
-                certification preparation.
+              <p style={{ fontSize: "16px", color: "#071b39", margin: "0 0 8px", lineHeight: 1.6 }}>
+                {result.passed
+                  ? `You're ${result.readiness - PASS_SCORE} points above the ${PASS_SCORE} pass line.`
+                  : `You're ${result.gap} points short of the ${PASS_SCORE} pass line.`}{" "}
+                {result.correct} of {result.total} correct.
               </p>
-              <a
-                href={COHORT_URL}
-                target="_blank"
-                rel="noopener noreferrer"
-                style={{
-                  display: "inline-flex",
-                  alignItems: "center",
-                  gap: "8px",
-                  padding: "16px 32px",
-                  borderRadius: "9px",
-                  background: "var(--accent)",
-                  color: "var(--navy)",
-                  fontWeight: 700,
-                  fontSize: "15px",
-                  textDecoration: "none",
-                  letterSpacing: "-0.01em",
-                  transition: "background 0.15s",
-                  minHeight: "52px",
-                }}
-                onMouseEnter={(e) => {
-                  (e.currentTarget as HTMLAnchorElement).style.background = "var(--accent-hover)";
-                }}
-                onMouseLeave={(e) => {
-                  (e.currentTarget as HTMLAnchorElement).style.background = "var(--accent)";
-                }}
-              >
-                Explore the cohort on Maven →
-              </a>
-            </div>
+              {result.lowConfidence && (
+                <p style={{ fontSize: "14px", color: "var(--muted)", margin: "0 0 8px" }}>
+                  Low confidence: this attempt has only {result.total} questions. A full mock gives a steadier estimate.
+                </p>
+              )}
+              {attempt.mode === "full" && (
+                <p style={{ fontSize: "14px", color: "var(--muted)", margin: 0 }}>
+                  &ldquo;Ready&rdquo; means the estimate stays at {READY_SCORE} or higher across 2 full mocks in a row.{" "}
+                  {ready ? "You've done it. Looks ready." : `Full mocks so far: ${fullMockReadiness(attempt.track).slice(-2).join(", ") || "none"}.`}
+                </p>
+              )}
+            </>
+          ) : (
+            <>
+              <div style={{ fontSize: "62px", fontWeight: 800, lineHeight: 1.3, letterSpacing: "-2px", color: "#071b39", fontFamily: "var(--font-manrope), sans-serif" }}>
+                {Math.round(result.pct * 100)}
+                <small style={{ fontSize: "20px", letterSpacing: 0, color: "var(--muted)", fontWeight: 500 }}>%</small>
+              </div>
+              <p style={{ fontSize: "16px", color: "#071b39", margin: "0 0 8px", lineHeight: 1.6 }}>
+                {result.correct} of {result.total} correct in this {MODES[attempt.mode].title.toLowerCase()}. Practice accuracy, not an official score.{" "}
+                {attempt.mode !== "review" && "Take the diagnostic or a full mock for a readiness estimate."}
+              </p>
+            </>
+          )}
 
-            {/* Question review */}
-            <div style={{ marginTop: "48px" }}>
-              <h2
-                style={{
-                  fontSize: "20px",
-                  fontWeight: 600,
-                  color: "var(--ink)",
-                  margin: "0 0 20px",
-                  letterSpacing: "-0.02em",
-                }}
-              >
-                Question review
-              </h2>
-              <QuestionReview results={results} />
-            </div>
-
-            {/* Next module CTA */}
-            {(() => {
-              const nextMod = modules[modules.findIndex((m) => m.id === mod.id) + 1];
-              if (!nextMod) return null;
-              return (
-                <div style={{ marginTop: "32px" }}>
-                  {nextMod.locked ? (
-                    <a
-                      href={COHORT_URL}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      style={{
-                        display: "inline-flex",
-                        alignItems: "center",
-                        gap: "8px",
-                        padding: "14px 24px",
-                        borderRadius: "9px",
-                        background: "var(--accent)",
-                        color: "var(--navy)",
-                        fontSize: "15px",
-                        fontWeight: 700,
-                        textDecoration: "none",
-                        letterSpacing: "-0.01em",
-                        minHeight: "52px",
-                        transition: "background 0.15s",
-                      }}
-                    >
-                      🔒 Unlock Module {nextMod.id}: {nextMod.title}
-                    </a>
-                  ) : (
-                    <Link
-                      href={`/quiz/${nextMod.id}`}
-                      style={{
-                        display: "inline-flex",
-                        alignItems: "center",
-                        gap: "8px",
-                        padding: "14px 24px",
-                        borderRadius: "9px",
-                        background: "var(--accent)",
-                        color: "var(--navy)",
-                        fontSize: "15px",
-                        fontWeight: 700,
-                        textDecoration: "none",
-                        letterSpacing: "-0.01em",
-                        minHeight: "52px",
-                        transition: "background 0.15s",
-                      }}
-                    >
-                      Next: {nextMod.title} →
-                    </Link>
-                  )}
+          {/* Domains */}
+          <h2 style={h2}>Percent correct by domain</h2>
+          <div style={{ display: "grid", gap: "12px" }}>
+            {sortedDomains.map((d) => (
+              <div key={d.domain}>
+                <div style={{ display: "flex", justifyContent: "space-between", gap: "12px", fontSize: "14px", marginBottom: "5px" }}>
+                  <span>
+                    {d.domain} <span style={{ color: "var(--muted)" }}>({d.weight}% of exam)</span>
+                  </span>
+                  <strong>
+                    {Math.round((d.pct as number) * 100)}% · {d.correct}/{d.total}
+                  </strong>
                 </div>
-              );
-            })()}
+                <div style={{ height: "8px", borderRadius: "var(--r-pill)", background: "#e2e7f0" }}>
+                  <div style={{ height: "100%", width: `${(d.pct as number) * 100}%`, borderRadius: "var(--r-pill)", background: (d.pct as number) >= 0.69 ? "var(--correct-text)" : "var(--incorrect-text)" }} />
+                </div>
+              </div>
+            ))}
           </div>
-        </section>
+
+          {/* Weakest domain + next module + course CTA */}
+          {weakest && weakest.pct !== null && (
+            <div style={{ marginTop: "28px", background: "#071b39", color: "#fff", borderRadius: "14px", padding: "26px" }}>
+              <p style={{ margin: "0 0 6px", fontSize: "13px", fontWeight: 800, letterSpacing: "1px", textTransform: "uppercase", color: "#ff9b50" }}>Weakest domain</p>
+              <h3 style={{ margin: "0 0 10px", fontSize: "22px", color: "#fff" }}>{weakest.domain}</h3>
+              <p style={{ margin: "0 0 16px", color: "#c7d4e7", lineHeight: 1.6 }}>
+                You scored {Math.round(weakest.pct * 100)}% on {weakest.domain}. Our course covers it in Module {weakest.courseModule ?? 1}.
+              </p>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: "10px" }}>
+                <button onClick={() => again("drill", weakest.domain)} disabled={!!starting} style={{ ...btnOutline, background: "#ff9b50", border: "none" }}>
+                  {starting === "drill" ? "Starting…" : "Next: drill this domain →"}
+                </button>
+                <a
+                  href={COURSE_URL}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  onClick={() => trackEvent("course_cta_clicked", { where: "results", domain: weakest.domain })}
+                  style={{ ...btnOutline, background: "transparent", color: "#fff", borderColor: "rgba(255,255,255,.4)" }}
+                >
+                  See the course module
+                </a>
+              </div>
+            </div>
+          )}
+
+          {/* Fail report */}
+          {fail && (
+            <section aria-label="Detailed report">
+              <h2 style={h2}>Your detailed report</h2>
+              <p style={{ margin: "0 0 14px", lineHeight: 1.6 }}>
+                You&apos;re <strong>{result.gap} points</strong> short of the {PASS_SCORE} pass line. Here is where the points are, ranked by how much each area would lift your estimate.
+              </p>
+              <ol style={{ paddingLeft: "20px", margin: "0 0 14px", display: "grid", gap: "6px" }}>
+                {(email ? result.lifts.slice(0, 10) : topGaps).map((l) => (
+                  <li key={`${l.kind}-${l.name}`}>
+                    <strong>{l.name}</strong>
+                    {l.kind === "subSkill" && <span style={{ color: "var(--muted)" }}> · {l.domain}</span>}: {Math.round(l.pct * 100)}% correct, about +{l.lift} points available
+                  </li>
+                ))}
+              </ol>
+
+              {!email ? (
+                <div style={{ border: "1px dashed #99abc2", borderRadius: "10px", padding: "20px", background: "#f9fbfe" }}>
+                  <strong>Unlock the full report</strong>
+                  <p style={{ margin: "6px 0 14px", color: "var(--muted)", lineHeight: 1.6 }}>
+                    The full report adds every sub-skill, patterns in your mistakes, time per question, a personal study plan and a PDF. It needs an email address.
+                  </p>
+                  <button onClick={() => gate.open({ required: true, title: "Unlock your full report", body: "Add your email to see the full report, study plan and PDF." })} style={{ ...btnDark, marginTop: 0, width: "auto", padding: "14px 22px" }}>
+                    Add my email to unlock
+                  </button>
+                </div>
+              ) : (
+                <>
+                  {unweightedWeak.length > 0 && (
+                    <>
+                      <h3 style={{ ...h2, fontSize: "17px", margin: "22px 0 8px" }}>Sub-skills to review</h3>
+                      <p style={{ margin: "0 0 8px", color: "var(--muted)", fontSize: "14px" }}>The exam guide gives these no separate weight, so they are ranked by your accuracy.</p>
+                      <ul style={{ margin: 0, paddingLeft: "20px", display: "grid", gap: "4px" }}>
+                        {unweightedWeak.map((s) => (
+                          <li key={`${s.domain}-${s.subSkill}`}>
+                            <strong>{s.subSkill}</strong> <span style={{ color: "var(--muted)" }}>· {s.domain}</span>: {Math.round((s.pct as number) * 100)}% ({s.correct}/{s.total})
+                          </li>
+                        ))}
+                      </ul>
+                    </>
+                  )}
+
+                  <h3 style={{ ...h2, fontSize: "17px", margin: "22px 0 8px" }}>Patterns in your mistakes</h3>
+                  {result.patterns.length ? (
+                    <ul style={{ margin: 0, paddingLeft: "20px", display: "grid", gap: "6px" }}>
+                      {result.patterns.map((p) => <li key={p}>{p}</li>)}
+                    </ul>
+                  ) : (
+                    <p style={{ color: "var(--muted)", margin: 0 }}>No single pattern stands out. Your misses are spread across topics.</p>
+                  )}
+
+                  <h3 style={{ ...h2, fontSize: "17px", margin: "22px 0 8px" }}>Time per question</h3>
+                  <p style={{ margin: 0 }}>
+                    {result.avgSecondsPerQuestion} seconds on average, compared with the {result.paceSeconds}-second exam pace.
+                  </p>
+
+                  <h3 style={{ ...h2, fontSize: "17px", margin: "22px 0 8px" }}>Your study plan</h3>
+                  {planLoading && <p style={{ color: "var(--muted)" }}>Writing your plan…</p>}
+                  {plan && <PlanView plan={plan} />}
+                  {!planLoading && !plan && <p style={{ color: "var(--muted)" }}>The plan couldn&apos;t be generated right now. Your report and PDF are unaffected.</p>}
+
+                  <button onClick={downloadPdf} disabled={pdfBusy} style={{ ...btnOutline, marginTop: "20px", width: "100%" }}>
+                    {pdfBusy ? "Building PDF…" : "Download the full report (PDF)"}
+                  </button>
+                </>
+              )}
+
+              {/* 1:1 review call */}
+              <div style={{ marginTop: "24px", border: "1px solid #dce3ed", borderRadius: "12px", padding: "22px", background: "#f1f5fa" }}>
+                <strong style={{ fontSize: "17px" }}>Want a person to go through this with you?</strong>
+                <p style={{ margin: "6px 0 14px", color: "var(--muted)", lineHeight: 1.6 }}>
+                  Book a free 30-minute review call. An advisor sees your report first, so the time goes on your weak areas. One free call per track.
+                </p>
+                <BookingCTA track={attempt.track} readiness={result.readiness} reportUrl={reportUrl} />
+              </div>
+            </section>
+          )}
+
+          {/* Missed questions */}
+          <h2 style={h2}>Question review ({result.missed.length} missed)</h2>
+          {result.missed.length === 0 ? (
+            <p style={{ color: "var(--muted)" }}>No missed questions. Nice work.</p>
+          ) : (
+            <div style={{ display: "grid", gap: "10px" }}>
+              {result.missed.map((m, i) => (
+                <details key={m.id} className="faq-details" style={{ border: "1px solid #dce3ed", borderRadius: "10px", padding: "12px 16px" }}>
+                  <summary style={{ cursor: "pointer", fontWeight: 600 }}>
+                    {i + 1}. {m.question}
+                  </summary>
+                  <p style={{ margin: "10px 0 4px", fontSize: "13px", color: "var(--muted)" }}>
+                    {m.domain} · {m.subSkill}
+                  </p>
+                  <p style={{ margin: "4px 0", color: "var(--incorrect-text)", fontSize: "14px" }}>
+                    ✗ Your answer: {m.userPicks.length ? m.userPicks.map((l) => `${l}) ${m.options.find((o) => o.label === l)?.text}`).join("; ") : "not answered"}
+                  </p>
+                  <p style={{ margin: "4px 0", color: "var(--correct-text)", fontSize: "14px" }}>
+                    ✓ Correct: {m.keys.map((l) => `${l}) ${m.options.find((o) => o.label === l)?.text}`).join("; ")}
+                  </p>
+                  <p style={{ margin: "8px 0 0", fontSize: "15px", lineHeight: 1.65 }}>{m.explanation}</p>
+                </details>
+              ))}
+            </div>
+          )}
+
+          {/* Next actions */}
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "12px", marginTop: "32px" }}>
+            <button onClick={() => again(attempt.mode, attempt.domain)} disabled={!!starting} style={btnOutline}>
+              Repeat this module
+            </button>
+            {result.missed.length > 0 ? (
+              <button onClick={() => again("review")} disabled={!!starting} style={btnOutline}>
+                Review mistakes
+              </button>
+            ) : (
+              <button disabled style={{ ...btnOutline, opacity: 0.45, cursor: "not-allowed" }}>Review mistakes</button>
+            )}
+          </div>
+          <Link href={`/${attempt.track}`} style={btnDark}>
+            Choose any module
+          </Link>
+        </div>
       </main>
     </>
   );
 }
 
-// ── Question review accordion ─────────────────────────────────────────────
-function QuestionReview({
-  results,
-}: {
-  results: Array<{
-    id: number;
-    questionText: string;
-    section: string;
-    difficulty: string;
-    userAnswer: string;
-    correctAnswer: string;
-    isCorrect: boolean;
-    options: Array<{ label: string; text: string }>;
-  }>;
-}) {
-  const [expanded, setExpanded] = useState<Record<number, boolean>>({});
-
-  function toggle(i: number) {
-    setExpanded((prev) => ({ ...prev, [i]: !prev[i] }));
-  }
-
+function PlanView({ plan }: { plan: StudyPlan }) {
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
-      {results.map((r, i) => {
-        const isExpanded = !!expanded[i];
-        const describe = (answer: string) =>
-          parseAnswer(answer).map(
-            (l) => `${l}) ${r.options.find((o) => o.label === l)?.text ?? ""}`
-          );
-        const correctLines = describe(r.correctAnswer);
-        const userLines =
-          r.userAnswer === "?"
-            ? ["I'm not sure"]
-            : r.userAnswer
-            ? describe(r.userAnswer)
-            : ["Not answered"];
-
-        return (
-          <div key={i}>
-            <div
-              onClick={() => toggle(i)}
-              role="button"
-              tabIndex={0}
-              onKeyDown={(e) => e.key === "Enter" && toggle(i)}
-              aria-expanded={isExpanded}
-              style={{
-                background: "#ffffff",
-                border: "1px solid var(--border)",
-                borderRadius: isExpanded ? "var(--r-card) var(--r-card) 0 0" : "var(--r-card)",
-                padding: "16px 20px",
-                display: "flex",
-                alignItems: "center",
-                gap: "12px",
-                cursor: "pointer",
-                transition: "border-color 0.15s",
-              }}
-              onMouseEnter={(e) => {
-                (e.currentTarget as HTMLDivElement).style.borderColor = "var(--border-hover)";
-              }}
-              onMouseLeave={(e) => {
-                (e.currentTarget as HTMLDivElement).style.borderColor = "var(--border)";
-              }}
-            >
-              <span
-                style={{
-                  fontSize: "13px",
-                  fontWeight: 700,
-                  color: "var(--muted)",
-                  flexShrink: 0,
-                  minWidth: "24px",
-                }}
-              >
-                {String(i + 1).padStart(2, "0")}
-              </span>
-              <span
-                style={{
-                  flex: 1,
-                  fontSize: "14px",
-                  color: "var(--ink)",
-                  overflow: "hidden",
-                  whiteSpace: "nowrap",
-                  textOverflow: "ellipsis",
-                  minWidth: 0,
-                }}
-              >
-                {r.questionText}
-              </span>
-              {!r.isCorrect && (
-                <span
-                  style={{
-                    fontSize: "12px",
-                    fontWeight: 600,
-                    color: "var(--incorrect-text)",
-                    background: "var(--incorrect-bg)",
-                    padding: "3px 10px",
-                    borderRadius: "var(--r-pill)",
-                    whiteSpace: "nowrap",
-                    flexShrink: 0,
-                  }}
-                >
-                  Incorrect
-                </span>
-              )}
-              <span
-                style={{
-                  fontSize: "16px",
-                  color: "var(--faint)",
-                  flexShrink: 0,
-                  transition: "transform 0.15s",
-                  transform: isExpanded ? "rotate(90deg)" : "none",
-                }}
-              >
-                ›
-              </span>
-            </div>
-
-            {isExpanded && (
-              <div
-                className="card-enter"
-                style={{
-                  background: "var(--canvas)",
-                  border: "1px solid var(--border)",
-                  borderTop: "none",
-                  borderRadius: "0 0 var(--r-card) var(--r-card)",
-                  padding: "18px 20px",
-                  display: "flex",
-                  flexDirection: "column",
-                  gap: "10px",
-                }}
-              >
-                {!r.isCorrect && (
-                  <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
-                    <span
-                      style={{
-                        fontSize: "12px",
-                        fontWeight: 600,
-                        color: "var(--incorrect-text)",
-                        padding: "3px 10px",
-                        background: "var(--incorrect-bg)",
-                        borderRadius: "var(--r-pill)",
-                      }}
-                    >
-                      Your answer
-                    </span>
-                    <span style={{ fontSize: "14px", color: "var(--incorrect-text)" }}>
-                      {userLines.map((line) => (
-                        <span key={line} style={{ display: "block" }}>{line}</span>
-                      ))}
-                    </span>
-                  </div>
-                )}
-                <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
-                  <span
-                    style={{
-                      fontSize: "12px",
-                      fontWeight: 600,
-                      color: "var(--correct-text)",
-                      padding: "3px 10px",
-                      background: "var(--correct-bg)",
-                      borderRadius: "var(--r-pill)",
-                    }}
-                  >
-                    {r.isCorrect ? "Your answer" : "Correct answer"}
-                    {correctLines.length > 1 ? "s" : ""}
-                  </span>
-                  <span style={{ fontSize: "14px", color: "var(--correct-text)" }}>
-                    {correctLines.map((line) => (
-                      <span key={line} style={{ display: "block" }}>{line}</span>
-                    ))}
-                  </span>
-                </div>
-                <span
-                  style={{
-                    display: "inline-block",
-                    fontSize: "11px",
-                    fontWeight: 600,
-                    padding: "3px 10px",
-                    borderRadius: "var(--r-pill)",
-                    background: "var(--wash)",
-                    color: "var(--muted)",
-                  }}
-                >
-                  {r.difficulty}
-                </span>
-              </div>
-            )}
-          </div>
-        );
-      })}
-    </div>
-  );
-}
-
-export default function ResultsPage() {
-  return (
-    <Suspense
-      fallback={
-        <div style={{ padding: "96px 48px", textAlign: "center", color: "var(--muted)" }}>
-          Loading results…
+    <div>
+      <p style={{ lineHeight: 1.6 }}>{plan.summary}</p>
+      {plan.domains.map((d) => (
+        <div key={d.name} style={{ border: "1px solid #dce3ed", borderRadius: "10px", padding: "14px 16px", margin: "10px 0" }}>
+          <strong>{d.name}</strong> <span style={{ color: "var(--muted)" }}>· {Math.round(d.pct * 100)}% · Course Module {d.courseModule}</span>
+          <p style={{ margin: "6px 0", fontSize: "14px", lineHeight: 1.6 }}>{d.whatToStudy}</p>
+          <ul style={{ margin: 0, paddingLeft: "18px", fontSize: "14px" }}>
+            {d.docLinks.map((l) => (
+              <li key={l.url}>
+                <a href={l.url} target="_blank" rel="noopener noreferrer" style={{ color: "#214f91" }}>{l.title}</a>
+              </li>
+            ))}
+            <li>{d.drill}</li>
+          </ul>
         </div>
-      }
-    >
-      <ResultsContent />
-    </Suspense>
+      ))}
+      <ol style={{ paddingLeft: "20px", display: "grid", gap: "8px", margin: "14px 0" }}>
+        {plan.days.map((d) => (
+          <li key={d.day}>
+            <strong>
+              Day {d.day}
+              {d.date ? ` (${d.date})` : ""}: {d.title}
+            </strong>
+            {d.focus && <div style={{ color: "var(--muted)", fontSize: "14px" }}>{d.focus}</div>}
+            <ul style={{ margin: "2px 0 0", paddingLeft: "18px", fontSize: "14px" }}>
+              {d.tasks.map((t) => <li key={t}>{t}</li>)}
+            </ul>
+          </li>
+        ))}
+      </ol>
+      <p style={{ fontWeight: 600 }}>Retest checkpoint: {plan.retest.text}</p>
+      {plan.askForDate && <p style={{ color: "var(--muted)", fontSize: "14px" }}>No exam date given, so this is a 14-day default. Add your exam date next time to sharpen it.</p>}
+    </div>
   );
 }

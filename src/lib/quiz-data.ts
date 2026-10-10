@@ -1,4 +1,23 @@
-import type { QuizModule } from "@/types/quiz";
+import type { Difficulty, Option } from "@/types/quiz";
+
+/** Legacy Developer item source (v0 module layout). Re-tagged into the bank by bank/developer.ts. */
+interface LegacyQuestion {
+  id: number;
+  section: string;
+  difficulty: Difficulty;
+  question: string;
+  options: Option[];
+  answer: string;
+}
+
+interface QuizModule {
+  id: number;
+  title: string;
+  description: string;
+  status?: string;
+  locked?: boolean;
+  questions: LegacyQuestion[];
+}
 
 export const modules: QuizModule[] = [
   {

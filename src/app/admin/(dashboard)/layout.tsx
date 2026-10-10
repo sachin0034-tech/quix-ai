@@ -50,7 +50,7 @@ export default function AdminDashboardLayout({
         {/* Nav */}
         <nav style={{ flex: 1, padding: "10px 0" }}>
           <Link
-            href="/admin"
+            href="/admin/analytics"
             style={{
               display: "block",
               padding: "9px 18px",
@@ -60,10 +60,10 @@ export default function AdminDashboardLayout({
               textDecoration: "none",
             }}
           >
-            Modules
+            Analytics
           </Link>
           <Link
-            href="/admin/questions"
+            href="/admin/leads"
             style={{
               display: "block",
               padding: "9px 18px",
@@ -73,7 +73,33 @@ export default function AdminDashboardLayout({
               textDecoration: "none",
             }}
           >
-            Question Bank
+            Leads
+          </Link>
+          <Link
+            href="/admin/calls"
+            style={{
+              display: "block",
+              padding: "9px 18px",
+              color: "var(--on-navy)",
+              fontSize: "13px",
+              fontWeight: 500,
+              textDecoration: "none",
+            }}
+          >
+            1:1 calls
+          </Link>
+          <Link
+            href="/admin/reports"
+            style={{
+              display: "block",
+              padding: "9px 18px",
+              color: "var(--on-navy)",
+              fontSize: "13px",
+              fontWeight: 500,
+              textDecoration: "none",
+            }}
+          >
+            Reported questions
           </Link>
           <Link
             href="/admin/responses"
@@ -87,6 +113,32 @@ export default function AdminDashboardLayout({
             }}
           >
             Responses
+          </Link>
+          <Link
+            href="/admin"
+            style={{
+              display: "block",
+              padding: "9px 18px",
+              color: "var(--on-navy)",
+              fontSize: "13px",
+              fontWeight: 500,
+              textDecoration: "none",
+            }}
+          >
+            Domains
+          </Link>
+          <Link
+            href="/admin/questions"
+            style={{
+              display: "block",
+              padding: "9px 18px",
+              color: "var(--on-navy)",
+              fontSize: "13px",
+              fontWeight: 500,
+              textDecoration: "none",
+            }}
+          >
+            Question bank
           </Link>
           <a
             href="/"

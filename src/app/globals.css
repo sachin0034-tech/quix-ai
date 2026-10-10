@@ -14,10 +14,10 @@
   --accent-hover: #FFD1AD;
 
   /* Text */
-  --ink: #2B3A52;
+  --ink: #071b39; /* same deep blue as the hero background */
   --ink-2: #3A4C65;
   --muted: #5A6782;
-  --faint: #8C96AA;
+  --faint: #6B7690;
   --disabled: #C7CFDD;
 
   /* Surfaces */
@@ -33,9 +33,9 @@
   --on-navy-2: #B7C4DC;
 
   /* Status */
-  --correct-text: #16A34A;
+  --correct-text: #15803D; /* AA on white and on --correct-bg */
   --correct-bg: #EAF7EF;
-  --incorrect-text: #DC2626;
+  --incorrect-text: #B91C1C; /* AA on white and on --incorrect-bg */
   --incorrect-bg: #FDECEC;
 
   /* Gradient */

@@ -16,11 +16,12 @@ export function formatAnswer(labels: readonly string[]): string {
   return parseAnswer(labels.join("")).join(",");
 }
 
-/** Number of options the learner must pick for a question. */
+/** Number of options the learner must pick for a question ("Select N"). */
 export function requiredPicks(answer: string): number {
   return Math.max(1, parseAnswer(answer).length);
 }
 
+/** Multiple-response items are scored all-or-nothing: the picks must equal the key exactly. */
 export function isCorrectAnswer(user: readonly string[] | string, correct: string): boolean {
   const u = typeof user === "string" ? parseAnswer(user) : parseAnswer(user.join(""));
   const c = parseAnswer(correct);

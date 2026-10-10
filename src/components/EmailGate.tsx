@@ -1,62 +1,145 @@
 "use client";
 
-import { useState, useEffect } from "react";
-import { saveLead } from "@/lib/supabase";
+import { createContext, useCallback, useContext, useEffect, useRef, useState } from "react";
+import Link from "next/link";
+import { EMAIL_MODAL_AFTER, MAX_EMAIL_SKIPS, flags } from "@/lib/config";
+import { EMAIL_KEY, answeredTotal, getEmail, getLearner, getProfile, saveProfile } from "@/lib/client/store";
+import { track } from "@/lib/analytics";
 
-const EMAIL_KEY = "quix_user_email";
-const SKIP_KEY = "quix_skipped_email";
+const SKIPS_KEY = "quix_email_skips";
 
-export function getStoredEmail(): string | null {
-  if (typeof window === "undefined") return null;
-  return localStorage.getItem(EMAIL_KEY);
+interface OpenOptions {
+  /** Cannot be dismissed (used when the report needs an address) */
+  required?: boolean;
+  title?: string;
+  body?: string;
 }
+
+interface EmailGateApi {
+  email: string | null;
+  /** True while the capture modal is on screen (the quiz pauses behind it) */
+  modalOpen: boolean;
+  /** Call after every checked answer. Shows the modal once per person (after Q1 by default). */
+  onAnswered: () => void;
+  /** Ask for an email on demand, e.g. to unlock the full report. Resolves with the email or null. */
+  open: (opts?: OpenOptions) => Promise<string | null>;
+}
+
+const Ctx = createContext<EmailGateApi>({ email: null, modalOpen: false, onAnswered: () => {}, open: async () => null });
+export const useEmailGate = () => useContext(Ctx);
+
+const getSkips = () => {
+  try {
+    return Number(localStorage.getItem(SKIPS_KEY) ?? 0);
+  } catch {
+    return 0;
+  }
+};
 
 export function EmailGateProvider({ children }: { children: React.ReactNode }) {
   const [email, setEmail] = useState<string | null>(null);
-  const [showModal, setShowModal] = useState(false);
+  const [modal, setModal] = useState<{ required: boolean; opts: OpenOptions; counted: boolean } | null>(null);
+  const resolver = useRef<((v: string | null) => void) | null>(null);
+
   const [input, setInput] = useState("");
+  const [name, setName] = useState("");
+  const [examDate, setExamDate] = useState("");
+  const [consent, setConsent] = useState(false);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
-  const [ready, setReady] = useState(false);
 
   useEffect(() => {
-    const stored = localStorage.getItem(EMAIL_KEY);
-    const skipped = localStorage.getItem(SKIP_KEY);
-    if (stored) {
-      setEmail(stored);
-    } else if (!skipped) {
-      setShowModal(true);
-    }
-    setReady(true);
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- hydrate from localStorage after mount
+    setEmail(getEmail());
+    const p = getProfile();
+    setName(p.name ?? "");
+    setExamDate(p.examDate ?? "");
   }, []);
+
+  const close = useCallback((value: string | null) => {
+    setModal(null);
+    resolver.current?.(value);
+    resolver.current = null;
+  }, []);
+
+  const open = useCallback((opts: OpenOptions = {}) => {
+    if (getEmail()) return Promise.resolve(getEmail());
+    setModal({ required: !!opts.required, opts, counted: false });
+    return new Promise<string | null>((resolve) => {
+      resolver.current = resolve;
+    });
+  }, []);
+
+  const onAnswered = useCallback(() => {
+    if (!flags.emailModal || getEmail() || modal) return;
+    const answered = answeredTotal();
+    if (answered < EMAIL_MODAL_AFTER) return;
+    // Skippable twice, then the modal becomes required
+    const required = getSkips() >= MAX_EMAIL_SKIPS;
+    setModal({ required, opts: {}, counted: true });
+    resolver.current = null;
+    track("email_modal_shown", { afterAnswers: answered, required });
+  }, [modal]);
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     const trimmed = input.trim().toLowerCase();
-    if (!trimmed || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(trimmed)) {
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(trimmed)) {
       setError("Please enter a valid email address.");
       return;
     }
     setLoading(true);
     setError("");
-    await saveLead(trimmed);
-    localStorage.setItem(EMAIL_KEY, trimmed);
+    try {
+      await fetch("/api/lead", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: trimmed, name, examDate: examDate || null, consent, source: "modal", sessionId: getLearner().sessionId }),
+      });
+    } catch {
+      /* the lead is also kept locally; the quiz must never be blocked by a network error */
+    }
+    try {
+      localStorage.setItem(EMAIL_KEY, trimmed);
+    } catch {}
+    saveProfile({ name: name || undefined, examDate: examDate || undefined });
     setEmail(trimmed);
-    setShowModal(false);
+    track("email_submitted", { consent, hasName: !!name, hasExamDate: !!examDate });
     setLoading(false);
+    close(trimmed);
   }
 
-  function handleDismiss() {
-    localStorage.setItem(SKIP_KEY, "true");
-    setShowModal(false);
+  function handleSkip() {
+    if (modal?.counted) {
+      try {
+        localStorage.setItem(SKIPS_KEY, String(getSkips() + 1));
+      } catch {}
+      track("email_skipped", { skips: getSkips() });
+    }
+    close(null);
   }
 
-  if (!ready) return null;
+  const required = modal?.required ?? false;
+  const field: React.CSSProperties = {
+    width: "100%",
+    padding: "12px 14px",
+    borderRadius: "var(--r-input)",
+    border: "1.5px solid var(--border)",
+    fontSize: "15px",
+    color: "var(--ink)",
+    outline: "none",
+    background: "#fff",
+    fontFamily: "inherit",
+  };
+  const label: React.CSSProperties = { display: "block", fontSize: "13px", fontWeight: 600, color: "var(--ink)", margin: "14px 0 6px" };
 
   return (
-    <>
-      {showModal && (
+    <Ctx.Provider value={{ email, modalOpen: !!modal, onAnswered, open }}>
+      {modal && (
         <div
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="email-modal-title"
           style={{
             position: "fixed",
             inset: 0,
@@ -67,151 +150,69 @@ export function EmailGateProvider({ children }: { children: React.ReactNode }) {
             background: "rgba(15,27,51,.7)",
             backdropFilter: "blur(8px)",
             WebkitBackdropFilter: "blur(8px)",
-            padding: "24px",
+            padding: "16px",
+            overflowY: "auto",
           }}
         >
           <div
             style={{
               background: "#fff",
               borderRadius: "var(--r-feature)",
-              padding: "48px",
+              padding: "36px 36px 28px",
               maxWidth: "480px",
               width: "100%",
               boxShadow: "var(--shadow-feature)",
               position: "relative",
+              margin: "auto",
             }}
           >
-            {/* Close button */}
-            <button
-              onClick={handleDismiss}
-              aria-label="Skip and close"
-              style={{
-                position: "absolute",
-                top: "16px",
-                right: "16px",
-                width: "32px",
-                height: "32px",
-                borderRadius: "50%",
-                border: "1px solid var(--border)",
-                background: "#fff",
-                cursor: "pointer",
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
-                fontSize: "18px",
-                lineHeight: 1,
-                color: "var(--muted)",
-                transition: "background 0.15s, color 0.15s",
-              }}
-              onMouseEnter={(e) => {
-                (e.currentTarget as HTMLButtonElement).style.background = "var(--canvas)";
-                (e.currentTarget as HTMLButtonElement).style.color = "var(--ink)";
-              }}
-              onMouseLeave={(e) => {
-                (e.currentTarget as HTMLButtonElement).style.background = "#fff";
-                (e.currentTarget as HTMLButtonElement).style.color = "var(--muted)";
-              }}
-            >
-              ×
-            </button>
-
-            {/* Icon */}
-            <div
-              style={{
-                width: "52px",
-                height: "52px",
-                borderRadius: "14px",
-                background: "#fff3e8",
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
-                marginBottom: "24px",
-              }}
-            >
-              <svg width="24" height="24" viewBox="0 0 24 24" fill="none">
-                <path
-                  d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"
-                  stroke="var(--accent)"
-                  strokeWidth="1.6"
-                  strokeLinejoin="round"
-                />
-                <path
-                  d="M22 6l-10 7L2 6"
-                  stroke="var(--accent)"
-                  strokeWidth="1.6"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                />
-              </svg>
-            </div>
-
-            {/* Eyebrow */}
-            <div
-              style={{
-                display: "flex",
-                alignItems: "center",
-                gap: "7px",
-                marginBottom: "12px",
-              }}
-            >
-              <div
+            {!required && (
+              <button
+                onClick={handleSkip}
+                aria-label="Skip and close"
                 style={{
-                  width: "7px",
-                  height: "7px",
-                  borderRadius: "2px",
-                  background: "var(--accent)",
-                }}
-              />
-              <span
-                style={{
-                  fontSize: "12px",
-                  fontWeight: 600,
-                  letterSpacing: "0.6px",
-                  textTransform: "uppercase",
+                  position: "absolute",
+                  top: "16px",
+                  right: "16px",
+                  width: "32px",
+                  height: "32px",
+                  borderRadius: "50%",
+                  border: "1px solid var(--border)",
+                  background: "#fff",
+                  cursor: "pointer",
+                  fontSize: "18px",
+                  lineHeight: 1,
                   color: "var(--muted)",
                 }}
               >
-                Claude Certification · Module Assessment
+                ×
+              </button>
+            )}
+
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img src="/agentic-ai-logo-cropped.png" alt="Agentic AI Institute" style={{ height: "34px", width: "auto", marginBottom: "18px" }} />
+
+            <div style={{ display: "flex", alignItems: "center", gap: "7px", marginBottom: "10px" }}>
+              <div style={{ width: "7px", height: "7px", borderRadius: "2px", background: "var(--accent)" }} />
+              <span style={{ fontSize: "12px", fontWeight: 600, letterSpacing: "0.6px", textTransform: "uppercase", color: "var(--muted)" }}>
+                Claude Certification Practice Quiz
               </span>
             </div>
 
-            <h2
-              style={{
-                fontSize: "26px",
-                fontWeight: 700,
-                color: "var(--ink)",
-                margin: "0 0 10px",
-                lineHeight: 1.25,
-                letterSpacing: "-0.02em",
-              }}
-            >
-              Before we begin
+            <h2 id="email-modal-title" style={{ fontSize: "24px", fontWeight: 700, color: "var(--ink)", margin: "0 0 8px", lineHeight: 1.25, letterSpacing: "-0.02em" }}>
+              {modal.opts.title ?? "Save your progress"}
             </h2>
-            <p
-              style={{
-                fontSize: "15px",
-                lineHeight: 1.6,
-                color: "var(--muted)",
-                margin: "0 0 28px",
-              }}
-            >
-              Enter your email to receive your personalised results — or skip to
-              start right away.
+            <p style={{ fontSize: "15px", lineHeight: 1.6, color: "var(--muted)", margin: "0 0 6px" }}>
+              {modal.opts.body ??
+                (required
+                  ? "Add your email to keep going. It keeps your progress and sends your readiness report."
+                  : "Add your email to keep your progress and get your readiness report. You can skip this for now.")}
             </p>
 
             <form onSubmit={handleSubmit}>
-              <label
-                style={{
-                  display: "block",
-                  fontSize: "13px",
-                  fontWeight: 600,
-                  color: "var(--ink)",
-                  marginBottom: "8px",
-                }}
-              >
-                Email address
-              </label>
+              <label htmlFor="gate-email" style={label}>Email address</label>
               <input
+                id="gate-email"
                 type="email"
                 placeholder="you@company.com"
                 value={input}
@@ -220,48 +221,33 @@ export function EmailGateProvider({ children }: { children: React.ReactNode }) {
                   setError("");
                 }}
                 autoFocus
-                style={{
-                  width: "100%",
-                  padding: "13px 16px",
-                  borderRadius: "var(--r-input)",
-                  border: error
-                    ? "1.5px solid var(--incorrect-text)"
-                    : "1.5px solid var(--border)",
-                  fontSize: "15px",
-                  color: "var(--ink)",
-                  outline: "none",
-                  boxSizing: "border-box",
-                  background: "#fff",
-                  transition: "border-color 0.15s",
-                  fontFamily: "inherit",
-                }}
-                onFocus={(e) => {
-                  if (!error)
-                    (e.target as HTMLInputElement).style.borderColor = "var(--accent)";
-                }}
-                onBlur={(e) => {
-                  if (!error)
-                    (e.target as HTMLInputElement).style.borderColor = "var(--border)";
-                }}
+                autoComplete="email"
+                aria-invalid={!!error}
+                style={{ ...field, borderColor: error ? "var(--incorrect-text)" : "var(--border)" }}
               />
-              {error && (
-                <p
-                  style={{
-                    fontSize: "13px",
-                    color: "var(--incorrect-text)",
-                    marginTop: "6px",
-                    marginBottom: 0,
-                  }}
-                >
-                  {error}
-                </p>
-              )}
+              {error && <p role="alert" style={{ fontSize: "13px", color: "var(--incorrect-text)", margin: "6px 0 0" }}>✗ {error}</p>}
+
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "12px" }}>
+                <div>
+                  <label htmlFor="gate-name" style={label}>Name (optional)</label>
+                  <input id="gate-name" type="text" value={name} onChange={(e) => setName(e.target.value)} autoComplete="name" style={field} />
+                </div>
+                <div>
+                  <label htmlFor="gate-date" style={label}>Exam date (optional)</label>
+                  <input id="gate-date" type="date" value={examDate} onChange={(e) => setExamDate(e.target.value)} style={field} />
+                </div>
+              </div>
+
+              <label style={{ display: "flex", alignItems: "flex-start", gap: "9px", fontSize: "13px", color: "var(--muted)", marginTop: "16px", cursor: "pointer", lineHeight: 1.5 }}>
+                <input type="checkbox" checked={consent} onChange={(e) => setConsent(e.target.checked)} style={{ width: "18px", height: "18px", flexShrink: 0, marginTop: "1px" }} />
+                <span>Send me study tips and course updates by email. I&apos;ll confirm my address first and can unsubscribe in one click. (Optional)</span>
+              </label>
 
               <button
                 type="submit"
                 disabled={loading}
                 style={{
-                  marginTop: "16px",
+                  marginTop: "18px",
                   width: "100%",
                   padding: "14px",
                   borderRadius: "9px",
@@ -271,52 +257,44 @@ export function EmailGateProvider({ children }: { children: React.ReactNode }) {
                   fontSize: "16px",
                   fontWeight: 700,
                   cursor: loading ? "not-allowed" : "pointer",
-                  transition: "opacity 0.15s, background 0.15s",
                   opacity: loading ? 0.7 : 1,
                   fontFamily: "inherit",
-                  letterSpacing: "-0.01em",
                   minHeight: "52px",
                 }}
               >
-                {loading ? "Saving…" : "Start Assessment →"}
+                {loading ? "Saving…" : "Save my progress and keep going"}
               </button>
 
-              <button
-                type="button"
-                onClick={handleDismiss}
-                style={{
-                  marginTop: "10px",
-                  width: "100%",
-                  padding: "10px",
-                  borderRadius: "var(--r-card)",
-                  border: "1px solid var(--border)",
-                  background: "#fff",
-                  color: "var(--muted)",
-                  fontSize: "14px",
-                  fontWeight: 500,
-                  cursor: "pointer",
-                  fontFamily: "inherit",
-                }}
-              >
-                Skip for now
-              </button>
+              {!required && (
+                <button
+                  type="button"
+                  onClick={handleSkip}
+                  style={{
+                    marginTop: "10px",
+                    width: "100%",
+                    padding: "10px",
+                    borderRadius: "var(--r-card)",
+                    border: "1px solid var(--border)",
+                    background: "#fff",
+                    color: "var(--muted)",
+                    fontSize: "14px",
+                    fontWeight: 500,
+                    cursor: "pointer",
+                    fontFamily: "inherit",
+                  }}
+                >
+                  {modal.counted ? "Skip for now" : "Not now"}
+                </button>
+              )}
 
-              <p
-                style={{
-                  fontSize: "12px",
-                  color: "var(--faint)",
-                  textAlign: "center",
-                  marginTop: "14px",
-                  marginBottom: 0,
-                }}
-              >
-                No spam. Your email is only used to send your results.
+              <p style={{ fontSize: "12px", color: "var(--muted)", textAlign: "center", margin: "14px 0 0" }}>
+                See our <Link href="/privacy" style={{ color: "inherit" }}>privacy policy</Link>. Independent practice resource, not affiliated with Anthropic.
               </p>
             </form>
           </div>
         </div>
       )}
       {children}
-    </>
+    </Ctx.Provider>
   );
 }
