@@ -5,7 +5,7 @@ import data from "./module-bank.json";
  * The By Module exams of the Developer track: Modules 1-5, Level 1. Generated from 1.md..5.md by
  * scripts/build-module-bank.ts (npm run bank:modules). These questions are module-only: they never enter the
  * exam-weighted full mock, which keeps drawing from the existing Level 1 bank.
- * Level 2 has the same five modules; its questions live in the database (see levelTwoFromDatabase below).
+ * Levels 2 and 3 have the same five modules; their questions live in the database (see levelFromDatabase below).
  */
 
 /** Far above any database id, so the two can never collide */
@@ -55,7 +55,7 @@ const quizzes = (modules: RawModule[], bank: BankQuestion[]): ModuleQuiz[] =>
 /** One quiz per module; its questions are drawn together (no lessons) */
 export const MODULE_QUIZZES: ModuleQuiz[] = quizzes(raw, MODULE_BANK);
 
-/** The course (submodule) names a Level 2 question can carry in the database, and the module each one is */
+/** The course (submodule) names a Level 2 or 3 question can carry in the database, and the module each one is */
 const MODULE_OF_COURSE: Record<string, number> = {
   "MSO Foundations": 1,
   "Production-Grade Prompting, Agents & Tool Use": 2,
@@ -66,17 +66,17 @@ const MODULE_OF_COURSE: Record<string, number> = {
 };
 
 /**
- * Level 2 as the database holds it: questions stored with level 2, regrouped into Modules 1-5 by their course.
- * Returns null when the database has none.
+ * A database level (2 or 3) as the database holds it: questions stored with that level, regrouped into Modules 1-5
+ * by their course. Returns null when the database has none.
  */
-export function levelTwoFromDatabase(bank: BankQuestion[]): { bank: BankQuestion[]; quizzes: ModuleQuiz[] } | null {
+export function levelFromDatabase(bank: BankQuestion[], level: number): { bank: BankQuestion[]; quizzes: ModuleQuiz[] } | null {
   const titles = new Map(raw.map((m) => [m.module, m.title]));
-  const level2 = bank
-    .filter((q) => q.track === "developer" && q.level === 2 && q.submoduleName != null && MODULE_OF_COURSE[q.submoduleName] != null)
+  const ofLevel = bank
+    .filter((q) => q.track === "developer" && q.level === level && q.submoduleName != null && MODULE_OF_COURSE[q.submoduleName] != null)
     .map<BankQuestion>((q) => {
       const n = MODULE_OF_COURSE[q.submoduleName as string];
       return { ...q, domain: `${moduleName(n)}: ${titles.get(n)}`, submoduleName: moduleName(n), moduleOnly: true, resources: [] };
     });
-  if (!level2.length) return null;
-  return { bank: level2, quizzes: quizzes(raw, level2) };
+  if (!ofLevel.length) return null;
+  return { bank: ofLevel, quizzes: quizzes(raw, ofLevel) };
 }

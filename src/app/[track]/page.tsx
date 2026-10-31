@@ -43,6 +43,9 @@ async function levelCounts(): Promise<LevelCounts> {
     for (const q of bank) if (q.submoduleName) out[q.submoduleName] = (out[q.submoduleName] ?? 0) + 1;
     return out;
   };
-  const [one, two] = [await getLevel(1), await getLevel(2)];
-  return { total: { 1: one.bank.length, 2: two.bank.length }, modules: { 1: byModule(one.bank), 2: byModule(two.bank) } };
+  const [one, two, three] = [await getLevel(1), await getLevel(2), await getLevel(3)];
+  return {
+    total: { 1: one.bank.length, 2: two.bank.length, 3: three.bank.length },
+    modules: { 1: byModule(one.bank), 2: byModule(two.bank), 3: byModule(three.bank) },
+  };
 }

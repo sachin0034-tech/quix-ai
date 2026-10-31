@@ -47,7 +47,7 @@ export async function POST(req: Request) {
   }
 
   if ((body.mode === "drill" || body.mode === "demo") && !domains.some((d) => d.name === body.domain)) return bad("Choose a domain");
-  const moduleQuizzesOfLevel = track === "developer" && level === 2 ? (await getLevel(level)).quizzes : (await getModuleQuizzes())[track];
+  const moduleQuizzesOfLevel = track === "developer" && level > 1 ? (await getLevel(level)).quizzes : (await getModuleQuizzes())[track];
   const moduleQuiz = body.mode === "module" ? moduleQuizzesOfLevel.find((m) => m.name === body.module) : undefined;
   if (body.mode === "module" && !moduleQuiz) return bad("Choose a module");
 

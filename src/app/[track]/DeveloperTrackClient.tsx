@@ -4,7 +4,7 @@ import "../design/track.css";
 import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
-import { FULL_MOCK_MAX_MINUTES, FULL_MOCK_MAX_QUESTIONS, FULL_MOCK_MIN_MINUTES, FULL_MOCK_MIN_QUESTIONS, MODULE_QUESTION_SECONDS, MODULE_SIZE, OPEN_LEVELS, TRACKS } from "@/lib/blueprint";
+import { FULL_MOCK_MAX_MINUTES, FULL_MOCK_MAX_QUESTIONS, FULL_MOCK_MIN_MINUTES, FULL_MOCK_MIN_QUESTIONS, LEVELS, MODULE_QUESTION_SECONDS, MODULE_SIZE, OPEN_LEVELS, TRACKS } from "@/lib/blueprint";
 import type { TrackMeta } from "@/lib/bank";
 import { startAttempt, startDevFullMock } from "@/lib/client/start";
 import { track as trackEvent } from "@/lib/analytics";
@@ -22,10 +22,12 @@ export interface LevelCounts {
   modules: Record<number, Record<string, number>>;
 }
 
-const LEVEL_NOTE = "Level 3 will be available in a future update.";
-const levelOptions = (describedBy?: string): SegmentedOption[] =>
-  [1, 2, 3].map((lvl) => {
-    const locked = !OPEN_LEVELS.includes(lvl);
+const LEVEL_NOTE = "This level will be available in a future update.";
+/** A level is locked until it is open and holds questions, so a level whose questions are not loaded yet stays locked */
+const isLocked = (totals: Record<number, number>, lvl: number) => !OPEN_LEVELS.includes(lvl) || !((totals[lvl] ?? 0) > 0);
+const levelOptions = (totals: Record<number, number>, describedBy?: string): SegmentedOption[] =>
+  LEVELS.map((lvl) => {
+    const locked = isLocked(totals, lvl);
     return { value: lvl, label: `Level ${lvl}`, disabled: locked, note: LEVEL_NOTE, describedBy: locked ? describedBy : undefined };
   });
 
@@ -173,8 +175,8 @@ export default function DeveloperTrackClient({ meta, levels }: { meta: TrackMeta
                   <div className="configure__col">
                     <div className="field">
                       <span className="field__label" id="mock-level-label">Level</span>
-                      <Segmented labelledBy="mock-level-label" value={level} onChange={setLevel} options={levelOptions("lvl3-note")} />
-                      <span className="field__hint" id="lvl3-note">{LEVEL_NOTE}</span>
+                      <Segmented labelledBy="mock-level-label" value={level} onChange={setLevel} options={levelOptions(levels.total, "locked-level-note")} />
+                      {LEVELS.some((lvl) => isLocked(levels.total, lvl)) && <span className="field__hint" id="locked-level-note">{LEVEL_NOTE}</span>}
                     </div>
                   </div>
                   <div className="configure__col">
@@ -222,7 +224,7 @@ export default function DeveloperTrackClient({ meta, levels }: { meta: TrackMeta
                   <article className="card" key={m.name}>
                     <span className="mode-grid__num">{m.name}</span>
                     <h3 className="t-h4">{m.description}</h3>
-                    <Segmented ariaLabel={`${m.name} level`} value={levelFor(m.name)} onChange={(lvl) => setModuleLevels((prev) => ({ ...prev, [m.name]: lvl }))} options={levelOptions()} />
+                    <Segmented ariaLabel={`${m.name} level`} value={levelFor(m.name)} onChange={(lvl) => setModuleLevels((prev) => ({ ...prev, [m.name]: lvl }))} options={levelOptions(levels.total)} />
                     <div className="card__foot">
                       <p className="mode-card__facts">
                         <span><Icon name="list" size="sm" />{n} question{n === 1 ? "" : "s"}</span>

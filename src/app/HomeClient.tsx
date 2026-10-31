@@ -236,7 +236,7 @@ export default function HomeClient({ meta }: { meta: Meta }) {
                     </dl>
                     <ul className="rules">
                       <li><Icon name="check" /><span>{meta[id].total} questions for diagnostic, sprint, drill and full mock</span></li>
-                      {meta[id].moduleOnly > 0 && <li><Icon name="check" /><span>{meta[id].moduleOnly} module questions{id === "developer" ? " across Levels 1 and 2" : ""}</span></li>}
+                      {meta[id].moduleOnly > 0 && <li><Icon name="check" /><span>{meta[id].moduleOnly} module questions{id === "developer" ? " across Levels 1 to 3" : ""}</span></li>}
                     </ul>
                     <div className="card__foot">
                       <Link

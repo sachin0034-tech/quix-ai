@@ -426,9 +426,9 @@ export const MODULE_QUESTION_SECONDS = 40;
 /** Seconds a question has once the learner pauses its clock (that question then scores as incorrect) */
 export const MODULE_PAUSE_SECONDS = 60;
 
-/** Levels learners can attempt. Level 3 stays locked until it is enabled in a future update. */
+/** Levels learners can attempt. A level that holds no questions yet is still shown locked on the track page. */
 export const LEVELS = [1, 2, 3] as const;
-export const OPEN_LEVELS: readonly number[] = [1, 2];
+export const OPEN_LEVELS: readonly number[] = [1, 2, 3];
 export const isLevelOpen = (level: number) => OPEN_LEVELS.includes(level);
 
 /** Developer full mock limits: questions and total minutes the learner can choose */

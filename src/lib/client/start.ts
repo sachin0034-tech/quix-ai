@@ -12,7 +12,7 @@ export interface StartOptions {
   /** Practice by module: the module name */
   module?: string;
   examConditions?: boolean;
-  /** Developer exams: the level (Levels 1 and 2 are open) */
+  /** Developer exams: the level (1, 2 or 3) */
   level?: number;
   /** Developer full mock: chosen question count and total minutes */
   questionCount?: number;

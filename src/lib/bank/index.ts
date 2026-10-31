@@ -3,7 +3,7 @@ import { DEMO_SIZE, TRACKS, TRACK_IDS, type DocLink, type DomainDef, type SubSki
 import { parseAnswer, requiredPicks } from "@/lib/answers";
 import { db } from "@/lib/server/db";
 import { CODE_BANK } from "./code-bank";
-import { levelTwoFromDatabase, MODULE_BANK, MODULE_QUIZZES } from "./module-bank";
+import { levelFromDatabase, MODULE_BANK, MODULE_QUIZZES } from "./module-bank";
 
 /**
  * Question bank and exam blueprint. SERVER ONLY: it carries answer keys, so only API routes and
@@ -270,9 +270,13 @@ async function load(): Promise<Loaded> {
   }
   const base = result ?? { at: Date.now(), domains: defaults(), bank: CODE_BANK, modules: { associate: [], developer: [] }, source: "code" as const };
   // The Developer By Module exams are Modules 1-5 from the module question files, whatever the database holds
-  // Level 2 comes from the database: the questions stored with level 2 (empty while there are none)
-  const level2 = levelTwoFromDatabase(base.bank);
-  const levels = { 1: { bank: MODULE_BANK, quizzes: MODULE_QUIZZES }, 2: level2 ?? { bank: [], quizzes: [] } };
+  // Levels 2 and 3 come from the database: the questions stored with that level (empty while there are none)
+  const empty = { bank: [], quizzes: [] };
+  const levels = {
+    1: { bank: MODULE_BANK, quizzes: MODULE_QUIZZES },
+    2: levelFromDatabase(base.bank, 2) ?? empty,
+    3: levelFromDatabase(base.bank, 3) ?? empty,
+  };
   cache = { ...base, bank: [...base.bank, ...MODULE_BANK], modules: { ...base.modules, developer: MODULE_QUIZZES }, levels };
   return cache;
 }
@@ -308,10 +312,10 @@ export async function allTrackBank(track: TrackId): Promise<BankQuestion[]> {
   return (await getBank()).filter((q) => q.track === track);
 }
 
-/** The Developer By Module questions and quizzes of a level (1 or 2) */
+/** The Developer By Module questions and quizzes of a level (1, 2 or 3) */
 export async function getLevel(level: number): Promise<{ bank: BankQuestion[]; quizzes: ModuleQuiz[] }> {
   const { levels } = await load();
-  return level === 2 ? levels[2] : levels[1];
+  return levels[level] ?? levels[1];
 }
 
 export async function getModuleQuizzes(): Promise<Record<TrackId, ModuleQuiz[]>> {
@@ -364,8 +368,8 @@ export async function bankMeta(): Promise<Record<TrackId, TrackMeta>> {
   const out = {} as Record<TrackId, TrackMeta>;
   for (const id of TRACK_IDS) {
     const items = bank.filter((q) => q.track === id && !q.moduleOnly);
-    // Developer By Module questions are the ones of Levels 1 and 2; other tracks use their module-quiz-only questions
-    const moduleOnly = id === "developer" ? levels[1].bank.length + levels[2].bank.length : bank.filter((q) => q.track === id && q.moduleOnly).length;
+    // Developer By Module questions are the ones of every level; other tracks use their module-quiz-only questions
+    const moduleOnly = id === "developer" ? Object.values(levels).reduce((n, l) => n + l.bank.length, 0) : bank.filter((q) => q.track === id && q.moduleOnly).length;
     out[id] = {
       track: id,
       total: items.length,
