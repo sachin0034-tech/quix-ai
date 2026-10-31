@@ -162,7 +162,8 @@
 .accordion__trigger:hover { color: var(--link); }
 .accordion__icon { flex: none; width: 28px; height: 28px; display: grid; place-items: center; border-radius: var(--r-sm); border: 1px solid var(--line); color: var(--ink); transition: transform var(--dur) var(--ease), background var(--dur) var(--ease); }
 .accordion__trigger[aria-expanded="true"] .accordion__icon { transform: rotate(45deg); background: var(--bg-tint); border-color: transparent; }
-.accordion__panel { overflow: hidden; display: grid; grid-template-rows: 0fr; transition: grid-template-rows var(--dur) var(--ease); }
+/* position: relative so absolutely positioned content (e.g. .sr-only) is clipped while collapsed, not left hanging below the page */
+.accordion__panel { position: relative; overflow: hidden; display: grid; grid-template-rows: 0fr; transition: grid-template-rows var(--dur) var(--ease); }
 .accordion__panel > div { min-height: 0; }
 .accordion__trigger[aria-expanded="true"] + .accordion__panel { grid-template-rows: 1fr; }
 .accordion__body { padding: 0 0 var(--s-5); color: var(--muted); font-size: var(--fs-sm); line-height: 1.55; max-width: 68ch; }
