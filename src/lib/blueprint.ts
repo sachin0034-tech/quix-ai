@@ -420,8 +420,11 @@ export const DEMO_SIZE = 5;
 /** Questions in one practice-by-module session (fewer only when the module holds fewer) */
 export const MODULE_SIZE = 15;
 
-/** Seconds a learner has for each question of a module quiz */
+/** Seconds a learner has for each question of a module quiz, unless they choose another limit */
 export const MODULE_QUESTION_SECONDS = 40;
+/** Module quiz: the per-question limits (seconds) a learner can choose */
+export const MODULE_MIN_QUESTION_SECONDS = 10;
+export const MODULE_MAX_QUESTION_SECONDS = 180;
 
 /** Seconds a question has once the learner pauses its clock (that question then scores as incorrect) */
 export const MODULE_PAUSE_SECONDS = 60;

@@ -2,7 +2,6 @@ import type { Metadata } from "next";
 import { Golos_Text } from "next/font/google";
 import "./globals.css";
 import { EmailGateProvider } from "@/components/EmailGate";
-import DisclaimerBanner from "@/components/DisclaimerBanner";
 import { SITE_NAME, SITE_URL } from "@/lib/site";
 import GoogleAnalytics from "@/components/GoogleAnalytics";
 
@@ -45,7 +44,6 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
     >
       <body className="min-h-full flex flex-col">
         <EmailGateProvider>
-          <DisclaimerBanner />
           {children}
         </EmailGateProvider>
         <GoogleAnalytics />

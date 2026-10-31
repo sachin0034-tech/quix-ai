@@ -50,6 +50,8 @@ export interface StoredAttempt {
   answers: Record<number, StoredAnswer>;
   checks: Record<number, CheckResult>;
   idx: number;
+  /** Module quizzes: the chosen seconds per question, or null for no timer at all (older attempts fall back to MODULE_QUESTION_SECONDS) */
+  questionSeconds?: number | null;
   /** Module quizzes: the clock of each question, by question id */
   qTiming?: Record<number, QuestionTiming>;
   finishedAt?: number;
