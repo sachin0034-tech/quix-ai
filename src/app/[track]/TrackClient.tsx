@@ -18,6 +18,7 @@ import Icon, { type IconName } from "@/components/Icon";
 import Listbox from "@/components/ui/Listbox";
 import Tabs from "@/components/ui/Tabs";
 import Tooltip from "@/components/ui/Tooltip";
+import ModuleStartDialog from "@/components/ModuleStartDialog";
 
 const SMALL_WORDS = new Set(["a", "an", "and", "of", "to", "the", "or", "in", "on", "for"]);
 /** Interface labels are Title Case in the redesign; question content is never passed through this. */
@@ -36,6 +37,10 @@ export default function TrackClient({ track, meta }: { track: TrackId; meta: Tra
   const def = TRACKS[track];
   const [history, setHistory] = useState<HistoryEntry[]>([]);
   const [wrong, setWrong] = useState(0);
+  /** Last timer choice for a module quiz: seconds per question, or null for no timer */
+  const [questionSeconds, setQuestionSeconds] = useState<number | null>(MODULE_QUESTION_SECONDS);
+  /** The module whose setup dialog is open */
+  const [picking, setPicking] = useState<{ name: string; description: string; count: number } | null>(null);
   const [domain, setDomain] = useState(meta.domains.find((d) => d.count > 0)?.name ?? meta.domains[0]?.name ?? "");
   const [exam, setExam] = useState(false);
   const [busy, setBusy] = useState<ModeId | null>(null);
@@ -72,10 +77,11 @@ export default function TrackClient({ track, meta }: { track: TrackId; meta: Tra
     }
   }
 
-  async function goModule(name: string) {
+  async function goModule(name: string, secs: number | null) {
+    setQuestionSeconds(secs);
     setModuleBusy(name);
     setError("");
-    const r = await startAttempt({ track, mode: "module", module: name });
+    const r = await startAttempt({ track, mode: "module", module: name, questionSeconds: secs });
     if ("id" in r) router.push(`/quiz/${r.id}`);
     else {
       setError(r.error);
@@ -241,8 +247,8 @@ export default function TrackClient({ track, meta }: { track: TrackId; meta: Tra
                           <p className="module-row__title">{m.name}</p>
                           <p className="module-row__desc">{m.description}</p>
                         </div>
-                        <span className="module-row__meta">{n} Q · {MODULE_QUESTION_SECONDS} Sec Each</span>
-                        <button type="button" className="btn btn--secondary btn--sm" onClick={() => goModule(m.name)} disabled={!!moduleBusy}>
+                        <span className="module-row__meta">{n} Q · Timed or No Timer</span>
+                        <button type="button" className="btn btn--secondary btn--sm" onClick={() => setPicking({ name: m.name, description: m.description, count: n })} disabled={!!moduleBusy}>
                           {moduleBusy === m.name ? "Starting…" : "Start"}
                         </button>
                       </li>
@@ -278,6 +284,16 @@ export default function TrackClient({ track, meta }: { track: TrackId; meta: Tra
           </div>
         </section>
       </main>
+      {picking && (
+        <ModuleStartDialog
+          title={`${picking.name}: ${picking.description}`}
+          detail={`${picking.count} question${picking.count === 1 ? "" : "s"}`}
+          seconds={questionSeconds}
+          busy={moduleBusy === picking.name}
+          onCancel={() => setPicking(null)}
+          onStart={(secs) => void goModule(picking.name, secs)}
+        />
+      )}
       <SiteFooter />
     </>
   );

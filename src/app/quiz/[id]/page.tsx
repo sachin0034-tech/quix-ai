@@ -84,7 +84,9 @@ function QuizRunner({ attempt }: { attempt: StoredAttempt }) {
   const [now, setNow] = useState(() => Date.now());
   const shownAt = useRef(0);
   // Module quizzes give each question its own clock
-  const perQ = attempt.mode === "module" ? MODULE_QUESTION_SECONDS * 1000 : null;
+  /** Module quizzes: the learner's chosen seconds per question; null = no timer, so no pause and full points */
+  const questionSeconds = attempt.questionSeconds === undefined ? MODULE_QUESTION_SECONDS : attempt.questionSeconds;
+  const perQ = attempt.mode === "module" && questionSeconds !== null ? questionSeconds * 1000 : null;
   const [timing, setTiming] = useState<Record<number, QuestionTiming>>(attempt.qTiming ?? {});
   const [showTimeUp, setShowTimeUp] = useState(false);
   const [finishOpen, setFinishOpen] = useState(false);
@@ -207,7 +209,7 @@ function QuizRunner({ attempt }: { attempt: StoredAttempt }) {
       const result = (await res.json()) as CheckResult;
       setChecks((prev) => ({ ...prev, [qq.id]: result }));
       recordAnswer(qq, false);
-      trackEvent("question_answered", { correct: false, timedOut: true, domain: qq.domain, subSkill: qq.subSkill, seconds: MODULE_QUESTION_SECONDS, mode: attempt.mode });
+      trackEvent("question_answered", { correct: false, timedOut: true, domain: qq.domain, subSkill: qq.subSkill, seconds: questionSeconds, mode: attempt.mode });
       setShowTimeUp(true);
     } catch {
       setCheckError(true);
@@ -484,7 +486,7 @@ function QuizRunner({ attempt }: { attempt: StoredAttempt }) {
                 : paused && !currentComplete
                   ? "Timer paused. Take your time and pick your answer: this question earns at most half a point."
                   : clockRunning
-                    ? `${MODULE_QUESTION_SECONDS} seconds per question. Answer before it runs out.`
+                    ? `${questionSeconds} seconds per question. Answer before it runs out.`
                     : "Clock stopped. Continue when you are ready."}
             </p>
             {pauseHintFor === q.id && paused && !check && (
@@ -616,10 +618,6 @@ function QuizRunner({ attempt }: { attempt: StoredAttempt }) {
           </section>
 
           <div className="quiz-foot">
-            <span className="keys">
-              <kbd>1</kbd>–<kbd>{q.options.length}</kbd> Select <kbd>Enter</kbd> Next <kbd>←</kbd>
-              <kbd>→</kbd> Navigate
-            </span>
             <button className="btn btn--link" type="button" onClick={handleFinishEarly}>
               Finish and See Results
             </button>
@@ -660,7 +658,7 @@ function QuizRunner({ attempt }: { attempt: StoredAttempt }) {
         <Modal role="alertdialog" labelledBy="qtimeup-title" onClose={() => setShowTimeUp(false)}>
           <h2 className="modal__title" id="qtimeup-title">Time&apos;s Up</h2>
           <p className="modal__text">
-            You ran out of the {MODULE_QUESTION_SECONDS} seconds for this question, so it counts as missed. The correct answer{correctLabels.length > 1 ? "s are" : " is"}:
+            You ran out of the {questionSeconds} seconds for this question, so it counts as missed. The correct answer{correctLabels.length > 1 ? "s are" : " is"}:
           </p>
           <div className="options">
             {q.options.filter((o) => correctLabels.includes(o.label)).map((o) => (

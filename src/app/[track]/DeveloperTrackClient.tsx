@@ -13,6 +13,7 @@ import SiteFooter from "@/components/SiteFooter";
 import Icon from "@/components/Icon";
 import Segmented, { type SegmentedOption } from "@/components/ui/Segmented";
 import RangeField from "@/components/ui/RangeField";
+import ModuleStartDialog from "@/components/ModuleStartDialog";
 
 type Screen = "home" | "full-mock-config";
 
@@ -41,6 +42,10 @@ export default function DeveloperTrackClient({ meta, levels }: { meta: TrackMeta
   const levelFor = (name: string) => moduleLevels[name] ?? 1;
   const [questionCount, setQuestionCount] = useState(53);
   const [timerMinutes, setTimerMinutes] = useState(120);
+  /** Last timer choice for a module quiz: seconds per question, or null for no timer */
+  const [questionSeconds, setQuestionSeconds] = useState<number | null>(MODULE_QUESTION_SECONDS);
+  /** The module whose setup dialog is open */
+  const [picking, setPicking] = useState<{ name: string; description: string; count: number } | null>(null);
   const moduleTotal = levels.total[level] ?? 0;
   const [fullBusy, setFullBusy] = useState(false);
   const [moduleBusy, setModuleBusy] = useState<string | null>(null);
@@ -70,10 +75,11 @@ export default function DeveloperTrackClient({ meta, levels }: { meta: TrackMeta
     }
   }
 
-  async function startModule(name: string) {
+  async function startModule(name: string, secs: number | null) {
+    setQuestionSeconds(secs);
     setModuleBusy(name);
     setError("");
-    const r = await startAttempt({ track: "developer", mode: "module", module: name, level: levelFor(name) });
+    const r = await startAttempt({ track: "developer", mode: "module", module: name, level: levelFor(name), questionSeconds: secs });
     if ("id" in r) router.push(`/quiz/${r.id}`);
     else {
       setError(r.error);
@@ -148,13 +154,13 @@ export default function DeveloperTrackClient({ meta, levels }: { meta: TrackMeta
                   <div className="card__head"><span className="tag tag--neutral">Focused Practice</span><Icon name="layers" size="lg" className="track-ico--muted" /></div>
                   <h3 className="t-h3">By Module</h3>
                   <p className="mode-card__desc">
-                    Practice one course module at a time. {MODULE_QUESTION_SECONDS} seconds per question. Pause a question to skip it — it counts as incorrect but gives you 60 seconds to review.
+                    Practice one course module at a time. After you pick a module, choose seconds per question or no timer at all. Pause a question to skip it — it counts as incorrect but gives you 60 seconds to review.
                   </p>
                   <div className="card__foot">
                     <p className="mode-card__facts">
                       <span><Icon name="layers" size="sm" />{modules.length} modules</span>
                       <span><Icon name="list" size="sm" />Up to {MODULE_SIZE} questions each</span>
-                      <span><Icon name="clock" size="sm" />{MODULE_QUESTION_SECONDS} sec/question</span>
+                      <span><Icon name="clock" size="sm" />Configurable timer</span>
                     </p>
                     <a className="btn btn--secondary btn--block" href="#by-module">Browse Modules <Icon name="arrow-down" /></a>
                   </div>
@@ -215,7 +221,7 @@ export default function DeveloperTrackClient({ meta, levels }: { meta: TrackMeta
             <div className="section-head">
               <span className="eyebrow">By Module</span>
               <h2 className="t-h2" id="bm-title">Practice One Module at a Time</h2>
-              <p className="t-muted measure">{MODULE_QUESTION_SECONDS} seconds per question. Pause a question to mark it incorrect and get 60 seconds to study the answer before moving on.</p>
+              <p className="t-muted measure">Pick a module, then choose a time per question or no timer. On a timed question you can pause the clock, but a right answer then earns half a point.</p>
             </div>
             <div className="module-grid">
               {modules.map((m) => {
@@ -228,10 +234,9 @@ export default function DeveloperTrackClient({ meta, levels }: { meta: TrackMeta
                     <div className="card__foot">
                       <p className="mode-card__facts">
                         <span><Icon name="list" size="sm" />{n} question{n === 1 ? "" : "s"}</span>
-                        <span><Icon name="clock" size="sm" />{MODULE_QUESTION_SECONDS} sec each</span>
-                        <span>Pause available</span>
+                        <span><Icon name="clock" size="sm" />Timed or no timer</span>
                       </p>
-                      <button className="btn btn--secondary btn--block" type="button" onClick={() => void startModule(m.name)} disabled={!!moduleBusy}>
+                      <button className="btn btn--secondary btn--block" type="button" onClick={() => setPicking({ name: m.name, description: m.description, count: n })} disabled={!!moduleBusy}>
                         {moduleBusy === m.name ? "Starting…" : <>Start Level {levelFor(m.name)} <Icon name="arrow-right" /></>}
                       </button>
                     </div>
@@ -242,6 +247,16 @@ export default function DeveloperTrackClient({ meta, levels }: { meta: TrackMeta
           </div>
         </section>
       </main>
+      {picking && (
+        <ModuleStartDialog
+          title={`${picking.name}: ${picking.description}`}
+          detail={`Level ${levelFor(picking.name)} · ${picking.count} question${picking.count === 1 ? "" : "s"}`}
+          seconds={questionSeconds}
+          busy={moduleBusy === picking.name}
+          onCancel={() => setPicking(null)}
+          onStart={(secs) => void startModule(picking.name, secs)}
+        />
+      )}
       <SiteFooter />
     </>
   );

@@ -540,9 +540,6 @@ function Results({ attempt }: { attempt: StoredAttempt }) {
                   <button type="button" className="btn btn--secondary btn--block" onClick={() => again(attempt.mode, attempt.domain, attempt.module)} disabled={!!starting}>
                     Repeat This Module <Icon name="refresh" />
                   </button>
-                  <button type="button" className="btn btn--secondary btn--block" onClick={() => again("review")} disabled={!!starting || result.missed.length === 0}>
-                    Review Mistakes <Icon name="list" />
-                  </button>
                   <Link className="btn btn--secondary btn--block" href={`/${attempt.track}`}>
                     Choose Any Module <Icon name="layers" />
                   </Link>

@@ -17,6 +17,8 @@ export interface StartOptions {
   /** Developer full mock: chosen question count and total minutes */
   questionCount?: number;
   minutes?: number;
+  /** Practice by module: seconds per question, or null for no timer */
+  questionSeconds?: number | null;
 }
 
 /** Creates a Developer Full Mock attempt from the course-module bank. */
@@ -90,6 +92,7 @@ export async function startAttempt(o: StartOptions): Promise<{ id: string } | { 
       module: o.module,
       level: o.level,
       questionCount: o.questionCount,
+      questionSeconds: o.mode === "module" ? o.questionSeconds : undefined,
       examConditions: !!o.examConditions && o.mode === "full",
       startedAt: Date.now(),
       limitSeconds: minutes ? minutes * 60 : null,
