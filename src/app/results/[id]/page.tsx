@@ -93,6 +93,7 @@ function Results({ attempt }: { attempt: StoredAttempt }) {
     module: attempt.module,
     questionIds: attempt.questions.map((q) => q.id),
     pausedIds: Object.entries(attempt.qTiming ?? {}).filter(([, t]) => t.paused).map(([id]) => Number(id)),
+    reattemptIds: Object.entries(attempt.qTiming ?? {}).filter(([, t]) => t.reattempt).map(([id]) => Number(id)),
     answers: Object.entries(attempt.answers).map(([qid, a]) => ({ id: Number(qid), picks: a.picks, ms: a.ms })),
     totalSeconds: Math.round(((attempt.finishedAt ?? openedAt) - attempt.startedAt) / 1000),
   };

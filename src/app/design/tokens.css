@@ -72,7 +72,7 @@
   --error-bg:    #FCEFEE; /* extension */
   --warning:     #B45309; /* extension — timer under 2 min */
   --warning-bg:  #FFF5EB; /* extension */
-  --partial:     #A16207; /* extension — right answer, timer paused (half point) */
+  --partial:     #A16207; /* extension — right answer earning less than a point (timer paused or reattempt) */
   --partial-bg:  #FEF9C3; /* extension */
 
   /* ---------- Radius (sampled: 4 controls · 12 tint cards · 20 large cards) ---------- */

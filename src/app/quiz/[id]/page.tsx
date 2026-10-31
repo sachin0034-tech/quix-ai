@@ -88,7 +88,6 @@ function QuizRunner({ attempt }: { attempt: StoredAttempt }) {
   const questionSeconds = attempt.questionSeconds === undefined ? MODULE_QUESTION_SECONDS : attempt.questionSeconds;
   const perQ = attempt.mode === "module" && questionSeconds !== null ? questionSeconds * 1000 : null;
   const [timing, setTiming] = useState<Record<number, QuestionTiming>>(attempt.qTiming ?? {});
-  const [showTimeUp, setShowTimeUp] = useState(false);
   const [finishOpen, setFinishOpen] = useState(false);
   const qTextRef = useRef<HTMLHeadingElement>(null);
   const nextRef = useRef<HTMLButtonElement>(null);
@@ -105,6 +104,10 @@ function QuizRunner({ attempt }: { attempt: StoredAttempt }) {
   const check = checks[q.id];
   const qTime = timing[q.id];
   const timedOut = !!qTime?.timedOut;
+  /** The time ran out and the learner is choosing between Continue and Reattempt */
+  const choosing = !!qTime?.expired && !timedOut && !qTime?.reattempt && !check;
+  /** The learner chose to reattempt after the time ran out: no clock, no points */
+  const reattempt = !!qTime?.reattempt;
   /** The learner paused this question: a right answer earns half a point and it has the longer limit */
   const paused = !!qTime?.paused;
   /** The clock is frozen for good: a pause cannot be undone, but the learner can still answer */
@@ -112,7 +115,7 @@ function QuizRunner({ attempt }: { attempt: StoredAttempt }) {
   /** Answered, out of time, or paused: the question is settled and the learner can go on */
   const resolved = currentComplete || timedOut || paused;
   /** The clock runs from the moment the question is shown until an answer is complete or the time is gone */
-  const clockRunning = perQ !== null && !currentComplete && !timedOut && !check && !frozen;
+  const clockRunning = perQ !== null && !currentComplete && !timedOut && !check && !frozen && !qTime?.expired;
   const qRemaining = perQ === null ? null : remainingMs(qTime, now, perQ);
   const limitMs = perQ === null ? 0 : perQ;
   // Feedback mode: the answer locks and is revealed once the server has checked it
@@ -120,8 +123,14 @@ function QuizRunner({ attempt }: { attempt: StoredAttempt }) {
   const locked = revealed || checking || (feedback && currentComplete);
   const correctLabels = check?.keys ?? [];
   const currentCorrect = !!check?.correct;
-  /** Right answer with the timer paused: half a point, shown in yellow rather than red */
-  const halfCredit = check?.credit === 0.5;
+  /** The learner picked the right answer, whatever it earns */
+  const currentRight = !!check && correctLabels.length === selected.length && selected.every((l) => correctLabels.includes(l));
+  /** Right answer with the timer paused: half a point */
+  const halfCredit = currentRight && check?.credit === 0.5;
+  /** Right answer on a reattempt: no points */
+  const rightNoPoints = currentRight && reattempt;
+  /** A right answer that earns less than a full point (paused or reattempt) shows yellow, not green */
+  const yellow = halfCredit || rightNoPoints;
   const isLast = currentIdx === total - 1;
   const isFirst = currentIdx === 0;
   const primaryDisabled = !resolved || (feedback && !revealed && !paused) || checking || finishing || gate.modalOpen;
@@ -177,12 +186,20 @@ function QuizRunner({ attempt }: { attempt: StoredAttempt }) {
     return () => clearInterval(t);
   }, [clockRunning]);
 
-  // Out of time: stop the clock, fetch the correct answer and tell the learner
+  // Out of time: stop the clock and ask the learner whether to see the answer or try again
   const outOfTime = clockRunning && !!qTime && qRemaining !== null && qRemaining <= 0;
   useEffect(() => {
-    if (outOfTime) void runTimeout(q);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    if (!outOfTime) return;
+    const at = Date.now();
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- the clock ran out
+    setTiming((prev) => ({ ...prev, [q.id]: { ...prev[q.id], startedAt: prev[q.id]?.startedAt ?? at, pausedAt: undefined, stoppedAt: at, expired: true } }));
   }, [outOfTime, q.id]);
+
+  /** Time's up, try again: the clock stays stopped and the answer earns no points */
+  function chooseReattempt() {
+    setTiming((prev) => ({ ...prev, [q.id]: { ...prev[q.id], reattempt: true } }));
+    trackEvent("question_reattempted", { track: attempt.track, mode: attempt.mode, domain: q.domain });
+  }
 
   /** Freezes this question's clock: a right answer now earns half a point, the clock stays stopped, and the learner can still answer */
   function pauseClock() {
@@ -210,7 +227,7 @@ function QuizRunner({ attempt }: { attempt: StoredAttempt }) {
       setChecks((prev) => ({ ...prev, [qq.id]: result }));
       recordAnswer(qq, false);
       trackEvent("question_answered", { correct: false, timedOut: true, domain: qq.domain, subSkill: qq.subSkill, seconds: questionSeconds, mode: attempt.mode });
-      setShowTimeUp(true);
+      focusNextOnReveal.current = true;
     } catch {
       setCheckError(true);
     } finally {
@@ -225,7 +242,7 @@ function QuizRunner({ attempt }: { attempt: StoredAttempt }) {
       const res = await fetch("/api/check", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ seed: attempt.seed, id: qq.id, picks: chosen, paused: !!timing[qq.id]?.paused, learner: getLearner(), mode: attempt.mode, module: attempt.module }),
+        body: JSON.stringify({ seed: attempt.seed, id: qq.id, picks: chosen, paused: !!timing[qq.id]?.paused, reattempt: !!timing[qq.id]?.reattempt, learner: getLearner(), mode: attempt.mode, module: attempt.module }),
       });
       if (!res.ok) throw new Error("check failed");
       const result = (await res.json()) as CheckResult;
@@ -252,7 +269,7 @@ function QuizRunner({ attempt }: { attempt: StoredAttempt }) {
   // Single-answer questions lock on the first click; multi-answer questions toggle
   // until the required number is picked, then lock.
   function selectAnswer(label: OptionLabel) {
-    if (locked || gate.modalOpen || outOfTime || showTimeUp) return;
+    if (locked || gate.modalOpen || outOfTime || choosing) return;
     const current = answers[q.id]?.picks ?? [];
     let next: OptionLabel[];
     if (!isMulti) next = [label];
@@ -264,7 +281,7 @@ function QuizRunner({ attempt }: { attempt: StoredAttempt }) {
     if (next.length === picks) shownAt.current = Date.now();
     setAnswers((prev) => ({ ...prev, [q.id]: { picks: next, ms } }));
     // Answering stops this question's clock
-    if (next.length === picks && perQ !== null) {
+    if (next.length === picks && perQ !== null && !reattempt) {
       const stopped = Date.now();
       setTiming((prev) => (prev[q.id]?.stoppedAt ? prev : { ...prev, [q.id]: { startedAt: prev[q.id]?.startedAt ?? stopped, stoppedAt: stopped } }));
     }
@@ -310,10 +327,10 @@ function QuizRunner({ attempt }: { attempt: StoredAttempt }) {
     if (!isFirst) setCurrentIdx((i) => i - 1);
   }
 
-  /** Questions the learner has settled with a real answer (paused ones earn at most half a point) */
-  const answeredCount = questions.filter((qq) => isComplete(qq) && !timing[qq.id]?.paused).length;
+  /** Questions the learner has answered, paused and reattempted ones included */
+  const answeredCount = questions.filter(isComplete).length;
   const missingCount = total - answeredCount;
-  const correctCount = questions.filter((qq) => checks[qq.id]?.correct).length;
+  const correctCount = questions.filter(isRight).length;
 
   function handleFinishEarly() {
     setFinishOpen(true);
@@ -322,15 +339,8 @@ function QuizRunner({ attempt }: { attempt: StoredAttempt }) {
   // Keyboard handler
   const handleKeyDown = useCallback(
     (e: KeyboardEvent) => {
-      if (gate.modalOpen || finishOpen) return;
-      if (showTimeUp) {
-        // The "time's up" popup is open: Enter closes it, nothing else reacts
-        if (e.key === "Enter") {
-          e.preventDefault();
-          setShowTimeUp(false);
-        }
-        return;
-      }
+      // The "time's up" choice is open: its buttons handle the keyboard
+      if (gate.modalOpen || finishOpen || choosing) return;
       const target = e.target as HTMLElement | null;
       if (target && /^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName)) return;
       if (target?.closest('[role="listbox"]') || e.metaKey || e.ctrlKey || e.altKey) return;
@@ -352,7 +362,7 @@ function QuizRunner({ attempt }: { attempt: StoredAttempt }) {
       }
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [q, isFirst, currentComplete, resolved, showTimeUp, answers, checks, checking, finishing, questions.length, gate.modalOpen, finishOpen]
+    [q, isFirst, currentComplete, resolved, choosing, answers, checks, checking, finishing, questions.length, gate.modalOpen, finishOpen]
   );
 
   useEffect(() => {
@@ -363,7 +373,6 @@ function QuizRunner({ attempt }: { attempt: StoredAttempt }) {
   // New question: clear transient UI and move focus to the question text
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect -- reset transient UI when the question changes
-    setShowTimeUp(false);
     setCheckError(false);
     if (mounted.current) {
       qTextRef.current?.focus({ preventScroll: true });
@@ -373,18 +382,25 @@ function QuizRunner({ attempt }: { attempt: StoredAttempt }) {
 
   // After a fresh answer is revealed, move focus to Next so keyboard users can continue
   useEffect(() => {
-    if (focusNextOnReveal.current && revealed && !gate.modalOpen && !showTimeUp) {
+    if (focusNextOnReveal.current && revealed && !gate.modalOpen) {
       focusNextOnReveal.current = false;
       nextRef.current?.focus();
     }
-  }, [revealed, gate.modalOpen, showTimeUp]);
+  }, [revealed, gate.modalOpen]);
+
+  /** The learner picked the right answer, whatever it earns (paused: half a point, reattempt: none) */
+  function isRight(qq: PublicQuestion) {
+    const c = checks[qq.id];
+    const p = answers[qq.id]?.picks ?? [];
+    return !!c && p.length === c.keys.length && p.every((l) => c.keys.includes(l));
+  }
 
   // Segment progress bar: answered segments show the result once it is known, the current one is navy
   function segmentClass(i: number) {
     const qq = questions[i];
     const c = qq && checks[qq.id];
-    if (c && feedback) return c.correct ? "is-correct" : c.credit === 0.5 ? "is-partial" : "is-incorrect";
-    if (qq && (isComplete(qq) || timing[qq.id]?.timedOut || timing[qq.id]?.paused)) return "is-answered";
+    if (c && feedback) return !isRight(qq) ? "is-incorrect" : c.correct ? "is-correct" : "is-partial";
+    if (qq && (isComplete(qq) || timing[qq.id]?.timedOut || timing[qq.id]?.paused || timing[qq.id]?.reattempt)) return "is-answered";
     return i === currentIdx ? "is-current" : "";
   }
 
@@ -393,8 +409,9 @@ function QuizRunner({ attempt }: { attempt: StoredAttempt }) {
     const qq = questions[i];
     const c = qq && checks[qq.id];
     if (c && feedback) {
-      if (c.correct) return { text: "Correct", tone: "is-correct" };
-      return c.credit === 0.5 ? { text: "Half Point", tone: "is-partial" } : { text: "Incorrect", tone: "is-incorrect" };
+      if (!isRight(qq)) return { text: "Incorrect", tone: "is-incorrect" };
+      if (timing[qq.id]?.reattempt) return { text: "Correct · No Points", tone: "is-partial" };
+      return c.credit === 0.5 ? { text: "Correct · Half Point", tone: "is-partial" } : { text: "Correct", tone: "is-correct" };
     }
     if (qq && isComplete(qq)) return { text: "Answered", tone: "" };
     return { text: "Unanswered", tone: "" };
@@ -404,7 +421,7 @@ function QuizRunner({ attempt }: { attempt: StoredAttempt }) {
 
   function optionState(label: OptionLabel): OptState {
     if (revealed) {
-      if (correctLabels.includes(label)) return halfCredit ? "partial" : "correct";
+      if (correctLabels.includes(label)) return yellow ? "partial" : "correct";
       if (selected.includes(label)) return "wrong";
       return "dimmed";
     }
@@ -415,7 +432,7 @@ function QuizRunner({ attempt }: { attempt: StoredAttempt }) {
   function optionTag(label: OptionLabel): string | null {
     if (!revealed) return null;
     const picked = selected.includes(label);
-    if (correctLabels.includes(label)) return picked ? (halfCredit ? "Your Answer · Half Point" : "Your Answer · Correct") : "Correct Answer";
+    if (correctLabels.includes(label)) return picked ? (halfCredit ? "Your Answer · Correct · Half Point" : rightNoPoints ? "Your Answer · Correct · No Points" : "Your Answer · Correct") : "Correct Answer";
     return picked ? "Your Answer" : null;
   }
 
@@ -483,12 +500,22 @@ function QuizRunner({ attempt }: { attempt: StoredAttempt }) {
             <p className="quiz-timebar__note">
               {timedOut
                 ? "Time's up for this question."
-                : paused && !currentComplete
+                : qTime?.expired && !reattempt
+                  ? "Time's up for this question."
+                  : reattempt
+                    ? "Timer stopped for your reattempt."
+                    : paused && !currentComplete
                   ? "Timer paused. Take your time and pick your answer: this question earns at most half a point."
                   : clockRunning
                     ? `${questionSeconds} seconds per question. Answer before it runs out.`
                     : "Clock stopped. Continue when you are ready."}
             </p>
+            {reattempt && (
+              <p className="quiz-timebar__warning" role="status">
+                <Icon name="clock" size="sm" />
+                Reattempt: time ran out on this question, so it earns no points, even with the right answer.
+              </p>
+            )}
             {pauseHintFor === q.id && paused && !check && (
               <p className="quiz-timebar__hint" role="status">
                 A gentle reminder: a paused question earns at most half a point, even with the right answer.
@@ -556,15 +583,17 @@ function QuizRunner({ attempt }: { attempt: StoredAttempt }) {
 
             <div role="status" aria-live="polite">
               {revealed && check && (
-                <div className={`feedback feedback--${currentCorrect ? "correct" : halfCredit ? "partial" : "incorrect"}`} id="feedback">
+                <div className={`feedback feedback--${yellow ? "partial" : currentRight ? "correct" : "incorrect"}`} id="feedback">
                   <p className="feedback__status">
-                    <Icon name={currentCorrect || halfCredit ? "check" : "x"} />
+                    <Icon name={currentRight ? "check" : "x"} />
                     {currentCorrect
                       ? "Correct."
                       : timedOut
                         ? `Time's Up. ${correctWord}.`
-                        : halfCredit
-                          ? `Half a point (0.5). Your answer is right, but the timer was paused. Time on this question: ${fmt(answers[q.id]?.ms ?? 0)}.`
+                        : rightNoPoints
+                          ? "Correct, but this was a reattempt after the time ran out, so it earns no points."
+                          : halfCredit
+                          ? `Correct. Half a point (0.5), because the timer was paused. Time on this question: ${fmt(answers[q.id]?.ms ?? 0)}.`
                           : `Incorrect. ${correctWord}.`}
                   </p>
                   <p className="feedback__label">Explanation</p>
@@ -654,23 +683,15 @@ function QuizRunner({ attempt }: { attempt: StoredAttempt }) {
         </Modal>
       )}
 
-      {showTimeUp && timedOut && check && (
-        <Modal role="alertdialog" labelledBy="qtimeup-title" onClose={() => setShowTimeUp(false)}>
+      {choosing && (
+        <Modal role="alertdialog" labelledBy="qtimeup-title" describedBy="qtimeup-text" required>
           <h2 className="modal__title" id="qtimeup-title">Time&apos;s Up</h2>
-          <p className="modal__text">
-            You ran out of the {questionSeconds} seconds for this question, so it counts as missed. The correct answer{correctLabels.length > 1 ? "s are" : " is"}:
+          <p className="modal__text" id="qtimeup-text">
+            You ran out of the {questionSeconds} seconds for this question. Continue to see the correct answer and explanation, or reattempt it with the timer stopped. A reattempted question earns no points.
           </p>
-          <div className="options">
-            {q.options.filter((o) => correctLabels.includes(o.label)).map((o) => (
-              <div key={o.label} className="option is-correct">
-                <span className="option__key" aria-hidden="true">{o.label}</span>
-                <span className="option__text"><RichText text={o.text} /></span>
-                <span className="option__status"><Icon name="check" size="sm" />Correct Answer</span>
-              </div>
-            ))}
-          </div>
           <div className="modal__actions">
-            <button type="button" className="btn btn--accent" data-autofocus onClick={() => setShowTimeUp(false)}>Continue</button>
+            <button type="button" className="btn btn--secondary" onClick={chooseReattempt}>Reattempt</button>
+            <button type="button" className="btn btn--accent" data-autofocus onClick={() => void runTimeout(q)}>Continue</button>
           </div>
         </Modal>
       )}

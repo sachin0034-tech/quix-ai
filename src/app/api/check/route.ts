@@ -8,7 +8,7 @@ import type { CheckResult } from "@/types/quiz";
 
 /** Instant feedback: the key and explanation only leave the server after the learner has answered. */
 export async function POST(req: Request) {
-  const b = await readJson<{ seed: string; id: number; picks: unknown; learner?: unknown; mode?: string; module?: string; timedOut?: boolean; paused?: boolean }>(req);
+  const b = await readJson<{ seed: string; id: number; picks: unknown; learner?: unknown; mode?: string; module?: string; timedOut?: boolean; paused?: boolean; reattempt?: boolean }>(req);
   if (!b || typeof b.seed !== "string") return bad("Invalid request");
   const q = await getQuestion(Number(b.id));
   if (!q) return bad("Unknown question", 404);
@@ -19,9 +19,11 @@ export async function POST(req: Request) {
   if (!timedOut && picks.length !== keys.length) return bad(`Select ${keys.length}`);
   // A question whose clock was paused still shows its key, but earns at most half a point
   const paused = b.paused === true && b.mode === "module";
+  // A question answered again after its time ran out earns no points, right or wrong
+  const reattempt = b.reattempt === true && b.mode === "module";
   const matches = !timedOut && isCorrectAnswer(picks, keys.join(","));
   // A right answer with the timer paused earns half a point
-  const credit = matches ? (paused ? 0.5 : 1) : 0;
+  const credit = matches && !reattempt ? (paused ? 0.5 : 1) : 0;
   const out: CheckResult = {
     correct: credit === 1,
     credit,
