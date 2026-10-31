@@ -118,6 +118,8 @@ function QuizRunner({ attempt }: { attempt: StoredAttempt }) {
   const locked = revealed || checking || (feedback && currentComplete);
   const correctLabels = check?.keys ?? [];
   const currentCorrect = !!check?.correct;
+  /** Right answer with the timer paused: half a point, shown in yellow rather than red */
+  const halfCredit = check?.credit === 0.5;
   const isLast = currentIdx === total - 1;
   const isFirst = currentIdx === 0;
   const primaryDisabled = !resolved || (feedback && !revealed && !paused) || checking || finishing || gate.modalOpen;
@@ -379,25 +381,28 @@ function QuizRunner({ attempt }: { attempt: StoredAttempt }) {
   function segmentClass(i: number) {
     const qq = questions[i];
     const c = qq && checks[qq.id];
-    if (c && feedback) return c.correct ? "is-correct" : "is-incorrect";
+    if (c && feedback) return c.correct ? "is-correct" : c.credit === 0.5 ? "is-partial" : "is-incorrect";
     if (qq && (isComplete(qq) || timing[qq.id]?.timedOut || timing[qq.id]?.paused)) return "is-answered";
     return i === currentIdx ? "is-current" : "";
   }
 
   /** Status shown next to each question in the navigator */
-  function navStatus(i: number): { text: string; tone: "" | "is-correct" | "is-incorrect" } {
+  function navStatus(i: number): { text: string; tone: "" | "is-correct" | "is-partial" | "is-incorrect" } {
     const qq = questions[i];
     const c = qq && checks[qq.id];
-    if (c && feedback) return c.correct ? { text: "Correct", tone: "is-correct" } : { text: "Incorrect", tone: "is-incorrect" };
+    if (c && feedback) {
+      if (c.correct) return { text: "Correct", tone: "is-correct" };
+      return c.credit === 0.5 ? { text: "Half Point", tone: "is-partial" } : { text: "Incorrect", tone: "is-incorrect" };
+    }
     if (qq && isComplete(qq)) return { text: "Answered", tone: "" };
     return { text: "Unanswered", tone: "" };
   }
 
-  type OptState = "default" | "selected" | "correct" | "wrong" | "dimmed";
+  type OptState = "default" | "selected" | "correct" | "partial" | "wrong" | "dimmed";
 
   function optionState(label: OptionLabel): OptState {
     if (revealed) {
-      if (correctLabels.includes(label)) return "correct";
+      if (correctLabels.includes(label)) return halfCredit ? "partial" : "correct";
       if (selected.includes(label)) return "wrong";
       return "dimmed";
     }
@@ -408,7 +413,7 @@ function QuizRunner({ attempt }: { attempt: StoredAttempt }) {
   function optionTag(label: OptionLabel): string | null {
     if (!revealed) return null;
     const picked = selected.includes(label);
-    if (correctLabels.includes(label)) return picked ? "Your Answer · Correct" : "Correct Answer";
+    if (correctLabels.includes(label)) return picked ? (halfCredit ? "Your Answer · Half Point" : "Your Answer · Correct") : "Correct Answer";
     return picked ? "Your Answer" : null;
   }
 
@@ -416,8 +421,6 @@ function QuizRunner({ attempt }: { attempt: StoredAttempt }) {
   const remaining = deadline ? deadline - now : null;
   const lowQ = clockRunning && qRemaining !== null && qRemaining <= 10_000;
   const navItems = questions.map((_, i) => ({ i, ...navStatus(i) }));
-  /** Right answer with the timer paused: half a point */
-  const halfCredit = check?.credit === 0.5;
   const correctWord = `The correct answer${correctLabels.length > 1 ? "s are" : " is"} ${correctLabels.join(" and ")}`;
 
   return (
@@ -522,7 +525,7 @@ function QuizRunner({ attempt }: { attempt: StoredAttempt }) {
               {q.options.map((opt) => {
                 const state = optionState(opt.label);
                 const tag = optionTag(opt.label);
-                const cls = state === "selected" ? " is-selected" : state === "correct" ? " is-correct" : state === "wrong" ? " is-incorrect" : state === "dimmed" ? " is-dimmed" : "";
+                const cls = state === "selected" ? " is-selected" : state === "correct" ? " is-correct" : state === "partial" ? " is-partial" : state === "wrong" ? " is-incorrect" : state === "dimmed" ? " is-dimmed" : "";
                 return (
                   <button
                     key={opt.label}
@@ -540,7 +543,7 @@ function QuizRunner({ attempt }: { attempt: StoredAttempt }) {
                     </span>
                     {tag && (
                       <span className="option__status">
-                        <Icon name={state === "correct" ? "check" : "x"} size="sm" />
+                        <Icon name={state === "correct" || state === "partial" ? "check" : "x"} size="sm" />
                         {tag}
                       </span>
                     )}
@@ -551,9 +554,9 @@ function QuizRunner({ attempt }: { attempt: StoredAttempt }) {
 
             <div role="status" aria-live="polite">
               {revealed && check && (
-                <div className={`feedback feedback--${currentCorrect ? "correct" : "incorrect"}`} id="feedback">
+                <div className={`feedback feedback--${currentCorrect ? "correct" : halfCredit ? "partial" : "incorrect"}`} id="feedback">
                   <p className="feedback__status">
-                    <Icon name={currentCorrect ? "check" : "x"} />
+                    <Icon name={currentCorrect || halfCredit ? "check" : "x"} />
                     {currentCorrect
                       ? "Correct."
                       : timedOut
@@ -691,7 +694,7 @@ function QuestionNav({
   total,
   onSelect,
 }: {
-  items: { i: number; text: string; tone: "" | "is-correct" | "is-incorrect" }[];
+  items: { i: number; text: string; tone: "" | "is-correct" | "is-partial" | "is-incorrect" }[];
   current: number;
   total: number;
   onSelect: (i: number) => void;

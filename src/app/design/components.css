@@ -162,7 +162,8 @@
 .accordion__trigger:hover { color: var(--link); }
 .accordion__icon { flex: none; width: 28px; height: 28px; display: grid; place-items: center; border-radius: var(--r-sm); border: 1px solid var(--line); color: var(--ink); transition: transform var(--dur) var(--ease), background var(--dur) var(--ease); }
 .accordion__trigger[aria-expanded="true"] .accordion__icon { transform: rotate(45deg); background: var(--bg-tint); border-color: transparent; }
-.accordion__panel { overflow: hidden; display: grid; grid-template-rows: 0fr; transition: grid-template-rows var(--dur) var(--ease); }
+/* position: relative so absolutely positioned content (e.g. .sr-only) is clipped while collapsed, not left hanging below the page */
+.accordion__panel { position: relative; overflow: hidden; display: grid; grid-template-rows: 0fr; transition: grid-template-rows var(--dur) var(--ease); }
 .accordion__panel > div { min-height: 0; }
 .accordion__trigger[aria-expanded="true"] + .accordion__panel { grid-template-rows: 1fr; }
 .accordion__body { padding: 0 0 var(--s-5); color: var(--muted); font-size: var(--fs-sm); line-height: 1.55; max-width: 68ch; }
@@ -283,6 +284,7 @@
 .segments { display: grid; grid-template-columns: repeat(var(--count, 10), minmax(0, 1fr)); gap: 4px; }
 .segments__item { height: 4px; border-radius: 2px; background: var(--line); transition: background var(--dur) var(--ease); }
 .segments__item.is-correct { background: var(--success); }
+.segments__item.is-partial { background: var(--partial); }
 .segments__item.is-incorrect { background: var(--error); }
 .segments__item.is-current { background: var(--navy); }
 
@@ -345,6 +347,10 @@ kbd { display: inline-grid; place-items: center; min-width: 22px; height: 22px; 
 .option.is-correct { border-color: var(--success); box-shadow: inset 0 0 0 1px var(--success); background: var(--success-bg); }
 .option.is-correct .option__key { background: var(--success); border-color: var(--success); color: #fff; }
 .option.is-correct .option__status { display: inline-flex; color: var(--success); }
+/* Half point (right answer, timer paused) */
+.option.is-partial { border-color: var(--partial); box-shadow: inset 0 0 0 1px var(--partial); background: var(--partial-bg); }
+.option.is-partial .option__key { background: var(--partial); border-color: var(--partial); color: #fff; }
+.option.is-partial .option__status { display: inline-flex; color: var(--partial); }
 /* Incorrect (user's pick) */
 .option.is-incorrect { border-color: var(--error); box-shadow: inset 0 0 0 1px var(--error); background: var(--error-bg); }
 .option.is-incorrect .option__key { background: var(--error); border-color: var(--error); color: #fff; }
@@ -366,6 +372,7 @@ kbd { display: inline-grid; place-items: center; min-width: 22px; height: 22px; 
 /* Feedback — status line + explanation + resource in one calm panel */
 .feedback { margin-top: var(--s-6); padding: var(--s-5) var(--s-6); border-radius: var(--r-md); background: var(--bg-soft); border-left: 3px solid var(--fb, var(--navy)); animation: rise var(--dur) var(--ease); }
 .feedback--correct { --fb: var(--success); }
+.feedback--partial { --fb: var(--partial); }
 .feedback--incorrect { --fb: var(--error); }
 .feedback__status { display: flex; align-items: center; gap: 8px; font-size: var(--fs-body); color: var(--fb); margin-bottom: var(--s-3); font-weight: var(--fw-medium); }
 .feedback__label { font-size: var(--fs-xs); color: var(--muted); margin-bottom: 4px; }
