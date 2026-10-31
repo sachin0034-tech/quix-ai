@@ -29,6 +29,8 @@ export interface ResultRequest {
   questionIds: number[];
   /** Module quiz questions whose clock the learner paused: a right answer earns half a point */
   pausedIds?: number[];
+  /** Module quiz questions answered again after their time ran out: they earn no points */
+  reattemptIds?: number[];
   answers: { id: number; picks: unknown; ms: number }[];
   totalSeconds: number;
 }
@@ -62,5 +64,6 @@ export async function resultFromRequest(body: ResultRequest): Promise<ResultSumm
     resourcesFor: (q) => (lessonLink.has(q.id) ? [lessonLink.get(q.id) as Resource] : (q.resources ?? [])),
     totalSeconds: Math.max(0, Math.round(Number(body.totalSeconds) || 0)),
     pausedIds: paused,
+    reattemptIds: new Set(body.mode === "module" ? (body.reattemptIds ?? []).map(Number) : []),
   });
 }

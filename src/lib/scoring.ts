@@ -61,6 +61,8 @@ export interface ScoreInput {
   totalSeconds: number;
   /** Questions answered with the timer paused: a right answer earns half a point */
   pausedIds?: ReadonlySet<number>;
+  /** Questions answered again after their time ran out: they earn no points */
+  reattemptIds?: ReadonlySet<number>;
 }
 
 export function modeProducesReadiness(mode: ModeId): boolean {
@@ -99,7 +101,7 @@ export function computeResult(input: ScoreInput): ResultSummary {
     }
     // A right answer with the timer paused earns half a point
     const wasPaused = !!input.pausedIds?.has(q.id);
-    const credit = ok ? (wasPaused ? 0.5 : 1) : 0;
+    const credit = ok && !input.reattemptIds?.has(q.id) ? (wasPaused ? 0.5 : 1) : 0;
     correct += credit;
     if (wasPaused && a) pausedItems.push({ id: q.id, question: q.question, ms: a.ms, credit });
     if (multi) {

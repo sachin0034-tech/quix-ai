@@ -51,3 +51,4 @@
 .modal__title--flush { padding-right: 0; }
 .modal__head { --stack: 10px; }
 .modal__form { --stack: var(--s-4); }
+.quiz-timebar__warning { display: flex; align-items: center; gap: 6px; font-size: var(--fs-sm); color: var(--warning); background: var(--warning-bg); border-radius: var(--r-sm); padding: 8px 12px; }

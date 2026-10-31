@@ -12,6 +12,10 @@ export interface QuestionTiming {
   pausedAt?: number;
   /** Total time spent frozen, which does not count against the limit */
   pausedMs?: number;
+  /** The time ran out and the learner has not yet chosen to continue (reveal the answer) or reattempt */
+  expired?: boolean;
+  /** The time ran out and the learner chose to try again: the clock stays stopped and the question earns no points */
+  reattempt?: boolean;
 }
 
 /**

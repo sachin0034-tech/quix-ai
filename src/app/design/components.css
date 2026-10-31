@@ -338,7 +338,7 @@ kbd { display: inline-grid; place-items: center; min-width: 22px; height: 22px; 
 .option.is-correct { border-color: var(--success); box-shadow: inset 0 0 0 1px var(--success); background: var(--success-bg); }
 .option.is-correct .option__key { background: var(--success); border-color: var(--success); color: #fff; }
 .option.is-correct .option__status { display: inline-flex; color: var(--success); }
-/* Half point (right answer, timer paused) */
+/* Right answer earning less than a point (timer paused or reattempt) */
 .option.is-partial { border-color: var(--partial); box-shadow: inset 0 0 0 1px var(--partial); background: var(--partial-bg); }
 .option.is-partial .option__key { background: var(--partial); border-color: var(--partial); color: #fff; }
 .option.is-partial .option__status { display: inline-flex; color: var(--partial); }
