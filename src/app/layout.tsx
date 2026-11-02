@@ -42,7 +42,7 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
       className={`${golosText.variable} h-full`}
       suppressHydrationWarning
     >
-      <body className="min-h-full flex flex-col">
+      <body className="min-h-full flex flex-col" suppressHydrationWarning>
         <EmailGateProvider>
           {children}
         </EmailGateProvider>

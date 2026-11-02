@@ -86,7 +86,7 @@ export function buildFromRows(
   const lessonTopic = new Map<number, { submoduleId: number; link: Resource; lesson: string }>();
   for (const t of [...topicRows].sort((a, b) => (a.order_index ?? 0) - (b.order_index ?? 0) || a.id - b.id)) {
     if (!isHttpUrl(t.url) || !t.course_title?.trim()) continue;
-    const link = { title: topicTitle(t), url: t.url.trim() };
+    const link = { title: topicTitle(t), url: t.url.trim(), course: t.course_title.trim(), lesson: t.lesson_title?.trim() || undefined };
     if (t.lesson_title?.trim()) lessonTopic.set(t.id, { submoduleId: t.submodule_id, link, lesson: t.lesson_title.trim() });
     else bySubmodule.set(t.submodule_id, [...(bySubmodule.get(t.submodule_id) ?? []), link]);
   }
@@ -206,7 +206,7 @@ export function buildModuleQuizzes(input: {
       for (const t of topicsInOrder) {
         const lesson = t.lesson_title?.trim();
         if (!c.subIds.has(t.submodule_id) || !lesson || !isHttpUrl(t.url) || lessons.has(lesson)) continue;
-        lessons.set(lesson, { name: lesson, link: { title: `${lesson} (${name})`, url: t.url.trim() }, questions: [] });
+        lessons.set(lesson, { name: lesson, link: { title: `${lesson} (${name})`, url: t.url.trim(), course: name, lesson }, questions: [] });
       }
       const claimed = new Set<number>();
       for (const m of members) {

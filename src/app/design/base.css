@@ -63,6 +63,7 @@ button { cursor: pointer; background: none; border: 0; padding: 0; }
 /* ---------- Layout ---------- */
 .container { width: 100%; max-width: calc(var(--container) + var(--gutter) * 2); margin-inline: auto; padding-inline: var(--gutter); }
 .container--narrow { max-width: calc(var(--container-narrow) + var(--gutter) * 2); }
+.container--full { max-width: none; }
 .section { padding-block: var(--section-y); }
 .section--muted { background: var(--bg-muted); }
 .section--navy { background: var(--navy); color: var(--on-navy); }

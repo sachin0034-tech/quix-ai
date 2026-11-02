@@ -16,6 +16,10 @@ export interface Option {
 export interface Resource {
   title: string;
   url: string;
+  /** The Skill Jar course (module) the link opens. Skill Jar has no deep links, so the learner is told where to go. */
+  course?: string;
+  /** The lesson (sub-module) inside that course, when the question belongs to one */
+  lesson?: string;
 }
 
 /** A question as stored in the bank (server side only: carries the key). */
