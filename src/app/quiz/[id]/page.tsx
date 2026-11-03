@@ -22,7 +22,6 @@ import { useEmailGate } from "@/components/EmailGate";
 import Icon from "@/components/Icon";
 import Modal from "@/components/Modal";
 import Listbox, { type ListboxOption } from "@/components/ui/Listbox";
-import Header from "@/components/Header";
 import RichText from "@/components/RichText";
 import "@/app/design/quiz.css";
 
@@ -452,7 +451,6 @@ function QuizRunner({ attempt }: { attempt: StoredAttempt }) {
     return picked ? "Your Answer" : null;
   }
 
-  const modeTitle = `${trackDef.short} · ${MODES[attempt.mode].title}${attempt.domain ? `: ${attempt.domain}` : ""}${attempt.module ? `: ${attempt.module}` : ""}${attempt.level ? ` · Level ${attempt.level}` : ""}`;
   const remaining = deadline ? deadline - now : null;
   const lowQ = clockRunning && qRemaining !== null && qRemaining <= 10_000;
   const navItems = questions.map((_, i) => ({ i, ...navStatus(i) }));
@@ -461,7 +459,6 @@ function QuizRunner({ attempt }: { attempt: StoredAttempt }) {
   return (
     <div className="quiz-page">
       <a className="skip-link" href="#q-card">Skip to Question</a>
-      <Header moduleTitle={modeTitle} />
 
       {/* Quiz bar: back, progress, clock(s), navigator */}
       <div className="quiz-bar">
@@ -624,8 +621,13 @@ function QuizRunner({ attempt }: { attempt: StoredAttempt }) {
                           ? `Correct. Half a point (0.5), because the timer was paused. Time on this question: ${fmt(answers[q.id]?.ms ?? 0)}.`
                           : `Incorrect. ${correctWord}.`}
                   </p>
-                  <p className="feedback__label">Explanation</p>
-                  <p className="feedback__text"><RichText text={check.explanation} links /></p>
+                  <details key={q.id} className="feedback__explain">
+                    <summary className="feedback__label">
+                      Explanation
+                      <Icon name="chevron-down" size="sm" />
+                    </summary>
+                    <p className="feedback__text"><RichText text={check.explanation} links /></p>
+                  </details>
                   {!!check.resources?.length && (
                     <div className="feedback__resource">
                       <span className="t-muted">Read More on Skill Jar:</span>
