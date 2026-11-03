@@ -41,7 +41,7 @@ describe("submodules and Skill Jar links in the bank loader", () => {
 
   it("lists a domain's submodules in their stored order, with the course-level link of each", () => {
     expect(tools.submodules?.map((s) => s.name)).toEqual(["Production-Grade Prompting, Agents & Tool Use", "Claude Code, MCP & Integration"]);
-    expect(tools.submodules?.[0].topics).toEqual([{ title: "Production-Grade Prompting, Agents & Tool Use", url: "https://example.com/a" }]);
+    expect(tools.submodules?.[0].topics).toEqual([{ title: "Production-Grade Prompting, Agents & Tool Use", url: "https://example.com/a", course: "Production-Grade Prompting, Agents & Tool Use" }]);
   });
   it("drops topics with no URL or a non-web URL, so nothing unsafe can reach a learner's link", () => {
     const urls = tools.submodules?.flatMap((s) => s.topics.map((t) => t.url));
@@ -52,7 +52,7 @@ describe("submodules and Skill Jar links in the bank loader", () => {
   it("gives a question the course link of its submodule, and none when it has no submodule or its submodule has no links", () => {
     const byId = new Map(built.bank.map((q) => [q.id, q]));
     expect(byId.get(1)?.submoduleId).toBe(10);
-    expect(byId.get(1)?.resources).toEqual([{ title: "Production-Grade Prompting, Agents & Tool Use", url: "https://example.com/a" }]);
+    expect(byId.get(1)?.resources).toEqual([{ title: "Production-Grade Prompting, Agents & Tool Use", url: "https://example.com/a", course: "Production-Grade Prompting, Agents & Tool Use" }]);
     expect(byId.get(2)?.resources).toEqual([]);
     expect(byId.get(3)?.resources).toEqual([]);
     expect(byId.get(3)?.submoduleId).toBeNull();
@@ -62,7 +62,7 @@ describe("submodules and Skill Jar links in the bank loader", () => {
     expect(q5.topicId).toBe(2);
     expect(q5.lessonName).toBe("Tool schemas");
     expect(built.bank.find((q) => q.id === 1)?.lessonName).toBeNull();
-    expect(q5.resources).toEqual([{ title: "Tool schemas (Production-Grade Prompting, Agents & Tool Use)", url: "https://example.com/b" }]);
+    expect(q5.resources).toEqual([{ title: "Tool schemas (Production-Grade Prompting, Agents & Tool Use)", url: "https://example.com/b", course: "Production-Grade Prompting, Agents & Tool Use", lesson: "Tool schemas" }]);
   });
   it("ignores a lesson that belongs to a different submodule, and falls back to the course link", () => {
     const q6 = built.bank.find((q) => q.id === 6)!;
@@ -255,7 +255,7 @@ describe("practice by module", () => {
       expect(a.lessons[1].questions.map((q) => q.id)).toEqual([3]);
     });
     it("names each lesson's link after the lesson with the course in brackets, and takes position and description from its rows", () => {
-      expect(a.lessons[0].link).toEqual({ title: "Lesson 1 (Course A)", url: "https://example.com/a" });
+      expect(a.lessons[0].link).toEqual({ title: "Lesson 1 (Course A)", url: "https://example.com/a", course: "Course A", lesson: "Lesson 1" });
       expect(a.position).toBe(2);
       expect(a.description).toBe("About A");
     });

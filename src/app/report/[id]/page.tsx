@@ -5,6 +5,7 @@ import { TRACKS } from "@/lib/blueprint";
 import { DISCLAIMER } from "@/lib/config";
 import { db } from "@/lib/server/db";
 import SiteFooter from "@/components/SiteFooter";
+import RichText from "@/components/RichText";
 import "@/app/design/results.css";
 
 export const dynamic = "force-dynamic";
@@ -102,7 +103,7 @@ export default async function ReportPage({ params }: { params: Promise<{ id: str
                 <p className="t-xs t-muted">{m.domain} · {m.subSkill}</p>
                 <p className="is-no">Their answer: {m.userPicks.length ? m.userPicks.map((l) => m.options.find((o) => o.label === l)?.text).join("; ") : "not answered"}</p>
                 <p className="is-ok">Correct: {m.keys.map((l) => m.options.find((o) => o.label === l)?.text).join("; ")}</p>
-                <p style={{ color: "var(--ink-2)" }}>{m.explanation}</p>
+                <p style={{ color: "var(--ink-2)" }}><RichText text={m.explanation} links /></p>
               </article>
             ))}
           </div>

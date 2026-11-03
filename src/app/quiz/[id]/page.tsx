@@ -21,6 +21,7 @@ import {
 import { useEmailGate } from "@/components/EmailGate";
 import Icon from "@/components/Icon";
 import Modal from "@/components/Modal";
+import Listbox, { type ListboxOption } from "@/components/ui/Listbox";
 import Header from "@/components/Header";
 import RichText from "@/components/RichText";
 import "@/app/design/quiz.css";
@@ -85,7 +86,10 @@ function QuizRunner({ attempt }: { attempt: StoredAttempt }) {
   const shownAt = useRef(0);
   // Module quizzes give each question its own clock
   /** Module quizzes: the learner's chosen seconds per question; null = no timer, so no pause and full points */
-  const questionSeconds = attempt.questionSeconds === undefined ? MODULE_QUESTION_SECONDS : attempt.questionSeconds;
+  // The learner can change it, or turn the timer off for every question, from the quiz bar
+  const [questionSeconds, setQuestionSeconds] = useState<number | null>(
+    attempt.questionSeconds === undefined ? MODULE_QUESTION_SECONDS : attempt.questionSeconds,
+  );
   const perQ = attempt.mode === "module" && questionSeconds !== null ? questionSeconds * 1000 : null;
   const [timing, setTiming] = useState<Record<number, QuestionTiming>>(attempt.qTiming ?? {});
   const [finishOpen, setFinishOpen] = useState(false);
@@ -139,8 +143,8 @@ function QuizRunner({ attempt }: { attempt: StoredAttempt }) {
 
   // Persist progress so a refresh resumes the attempt
   useEffect(() => {
-    saveAttempt({ ...attempt, questions, answers, checks, idx: currentIdx, qTiming: timing });
-  }, [attempt, questions, answers, checks, currentIdx, timing]);
+    saveAttempt({ ...attempt, questions, answers, checks, idx: currentIdx, qTiming: timing, questionSeconds });
+  }, [attempt, questions, answers, checks, currentIdx, timing, questionSeconds]);
 
   useEffect(() => {
     shownAt.current = Date.now();
@@ -154,9 +158,9 @@ function QuizRunner({ attempt }: { attempt: StoredAttempt }) {
   const finish = useCallback(async () => {
     if (finishing) return;
     setFinishing(true);
-    saveAttempt({ ...attempt, questions, answers, checks, idx: currentIdx, qTiming: timing, finishedAt: Date.now() });
+    saveAttempt({ ...attempt, questions, answers, checks, idx: currentIdx, qTiming: timing, questionSeconds, finishedAt: Date.now() });
     router.push(`/results/${attempt.id}`);
-  }, [finishing, attempt, questions, answers, checks, currentIdx, timing, router]);
+  }, [finishing, attempt, questions, answers, checks, currentIdx, timing, questionSeconds, router]);
 
   // Countdown: finishes the attempt when time runs out
   useEffect(() => {
@@ -210,6 +214,17 @@ function QuizRunner({ attempt }: { attempt: StoredAttempt }) {
     setTiming((prev) => ({ ...prev, [q.id]: pauseTiming(prev[q.id], at) }));
     setNow(at);
     trackEvent("question_timer_paused", { track: attempt.track, mode: attempt.mode, domain: q.domain });
+  }
+
+  /** Seconds per question from now on, or null to turn the timer off for every remaining question */
+  function changeTimer(secs: number | null) {
+    // Turning the timer back on gives an unanswered question a fresh clock rather than counting the untimed minutes
+    if (secs !== null && questionSeconds === null && !currentComplete && !check) {
+      const at = Date.now();
+      setTiming((prev) => ({ ...prev, [q.id]: { ...prev[q.id], startedAt: at, stoppedAt: undefined, pausedMs: 0 } }));
+      setNow(at);
+    }
+    setQuestionSeconds(secs);
   }
 
   async function runTimeout(qq: PublicQuestion) {
@@ -283,7 +298,8 @@ function QuizRunner({ attempt }: { attempt: StoredAttempt }) {
     // Answering stops this question's clock
     if (next.length === picks && perQ !== null && !reattempt) {
       const stopped = Date.now();
-      setTiming((prev) => (prev[q.id]?.stoppedAt ? prev : { ...prev, [q.id]: { startedAt: prev[q.id]?.startedAt ?? stopped, stoppedAt: stopped } }));
+      // Keep the rest of the record: a paused question must stay paused so it still scores half a point
+      setTiming((prev) => (prev[q.id]?.stoppedAt ? prev : { ...prev, [q.id]: { ...prev[q.id], startedAt: prev[q.id]?.startedAt ?? stopped, stoppedAt: stopped } }));
     }
     if (next.length === picks && feedback) void runCheck(q, next);
   }
@@ -384,7 +400,7 @@ function QuizRunner({ attempt }: { attempt: StoredAttempt }) {
   useEffect(() => {
     if (focusNextOnReveal.current && revealed && !gate.modalOpen) {
       focusNextOnReveal.current = false;
-      nextRef.current?.focus();
+      nextRef.current?.focus({ preventScroll: true });
     }
   }, [revealed, gate.modalOpen]);
 
@@ -486,6 +502,17 @@ function QuizRunner({ attempt }: { attempt: StoredAttempt }) {
                 <span className="timer__value">{fmt(remaining)}</span>
               </span>
             )}
+            {/* A paused or reattempted question keeps its clock as it is, so the limit cannot be changed there */}
+            {attempt.mode === "module" && !paused && !reattempt && (
+              <div className="quiz-timer-set">
+                <Listbox
+                  label="Timer"
+                  options={timerOptions(questionSeconds)}
+                  value={questionSeconds === null ? "off" : String(questionSeconds)}
+                  onChange={(v) => changeTimer(v === "off" ? null : Number(v))}
+                />
+              </div>
+            )}
             <QuestionNav items={navItems} current={currentIdx} total={total} onSelect={setCurrentIdx} />
           </div>
         </div>
@@ -526,7 +553,7 @@ function QuizRunner({ attempt }: { attempt: StoredAttempt }) {
       </div>
 
       <main className="quiz-main">
-        <div className="container container--narrow">
+        <div className="container container--full">
           {attempt.examConditions && <p className="quiz-note">Exam conditions: feedback is hidden until you finish.</p>}
 
           <section className="q-card" id="q-card" aria-label="Question">
@@ -550,6 +577,7 @@ function QuizRunner({ attempt }: { attempt: StoredAttempt }) {
               </p>
             )}
 
+            <div className="q-body">
             <div className="options" role="group" aria-labelledby="q-text">
               {q.options.map((opt) => {
                 const state = optionState(opt.label);
@@ -597,7 +625,7 @@ function QuizRunner({ attempt }: { attempt: StoredAttempt }) {
                           : `Incorrect. ${correctWord}.`}
                   </p>
                   <p className="feedback__label">Explanation</p>
-                  <p className="feedback__text">{check.explanation}</p>
+                  <p className="feedback__text"><RichText text={check.explanation} links /></p>
                   {!!check.resources?.length && (
                     <div className="feedback__resource">
                       <span className="t-muted">Read More on Skill Jar:</span>
@@ -607,6 +635,17 @@ function QuizRunner({ attempt }: { attempt: StoredAttempt }) {
                           <Icon name="external" size="sm" />
                           <span className="sr-only">(opens in a new tab)</span>
                         </a>
+                      ))}
+                      {/* Skill Jar links can only open the whole course, so spell out the way to the lesson */}
+                      {check.resources.filter((r) => r.course).map((r) => (
+                        <div key={`path-${r.url}-${r.lesson ?? ""}`} className="feedback__path">
+                          <span className="t-muted">Where to find it:</span>
+                          <ol aria-label={`Steps to reach ${r.lesson ?? r.course}`}>
+                            <li>Open the link</li>
+                            <li>Module: <strong>{r.course}</strong></li>
+                            {r.lesson && <li>Lesson: <strong>{r.lesson}</strong></li>}
+                          </ol>
+                        </div>
                       ))}
                       <span className="note">Opens in a new tab. You need a Skill Jar account to open the course.</span>
                     </div>
@@ -633,6 +672,7 @@ function QuizRunner({ attempt }: { attempt: StoredAttempt }) {
                   </button>
                 </p>
               )}
+            </div>
             </div>
 
             <div className="q-actions">
@@ -684,7 +724,11 @@ function QuizRunner({ attempt }: { attempt: StoredAttempt }) {
       )}
 
       {choosing && (
-        <Modal role="alertdialog" labelledBy="qtimeup-title" describedBy="qtimeup-text" required>
+        // Closing it (X, Esc or the backdrop) goes back to the same question, like Reattempt
+        <Modal role="alertdialog" labelledBy="qtimeup-title" describedBy="qtimeup-text" onClose={chooseReattempt}>
+          <button type="button" className="modal__close" onClick={chooseReattempt} aria-label="Close and go back to the question">
+            <Icon name="x" />
+          </button>
           <h2 className="modal__title" id="qtimeup-title">Time&apos;s Up</h2>
           <p className="modal__text" id="qtimeup-text">
             You ran out of the {questionSeconds} seconds for this question. Continue to see the correct answer and explanation, or reattempt it with the timer stopped. A reattempted question earns no points.
@@ -707,6 +751,13 @@ function QuizRunner({ attempt }: { attempt: StoredAttempt }) {
 }
 
 /** Jump-to-question listbox (prototype `.listbox`): arrow keys, Home/End, Enter/Space, Esc restores focus to the button */
+/** Per-question limits offered in the quiz bar, plus the learner's own choice from the start dialog */
+const TIMER_PRESETS = [20, 30, 40, 60, 90, 120, 180];
+function timerOptions(current: number | null): ListboxOption[] {
+  const secs = current !== null && !TIMER_PRESETS.includes(current) ? [...TIMER_PRESETS, current].sort((a, b) => a - b) : TIMER_PRESETS;
+  return [{ value: "off", label: "No Timer" }, ...secs.map((s) => ({ value: String(s), label: `${s} sec each` }))];
+}
+
 function QuestionNav({
   items,
   current,
