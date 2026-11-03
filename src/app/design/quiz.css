@@ -89,3 +89,12 @@
 .feedback__path ol { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 0; list-style: none; margin: 0; padding: 0; }
 .feedback__path li + li::before { content: "→"; margin-inline: var(--s-2); color: var(--muted); }
 .feedback__path strong { font-weight: var(--fw-medium); color: var(--ink); }
+
+/* Explanation accordion: closed by default, status and links stay visible */
+.feedback__explain { margin-bottom: var(--s-2); }
+.feedback__explain > summary { color: var(--ink); font-weight: var(--fw-medium); display: inline-flex; align-items: center; gap: 4px; cursor: pointer; list-style: none; user-select: none; }
+.feedback__explain > summary::-webkit-details-marker { display: none; }
+.feedback__explain > summary:hover { color: var(--ink); }
+.feedback__explain > summary svg { transition: transform 150ms ease; }
+.feedback__explain[open] > summary svg { transform: rotate(180deg); }
+.feedback__explain > .feedback__text { margin-top: 4px; }
