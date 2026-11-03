@@ -498,7 +498,7 @@ function Results({ attempt }: { attempt: StoredAttempt }) {
                                     <dd>{answer(m.keys)}</dd>
                                   </div>
                                 </dl>
-                                <p className="results-review__explain">{m.explanation}</p>
+                                <p className="results-review__explain"><RichText text={m.explanation} links /></p>
                                 <SkillJarLinks resources={m.resources} />
                               </div>
                             </div>

@@ -502,7 +502,8 @@ function QuizRunner({ attempt }: { attempt: StoredAttempt }) {
                 <span className="timer__value">{fmt(remaining)}</span>
               </span>
             )}
-            {attempt.mode === "module" && (
+            {/* A paused or reattempted question keeps its clock as it is, so the limit cannot be changed there */}
+            {attempt.mode === "module" && !paused && !reattempt && (
               <div className="quiz-timer-set">
                 <Listbox
                   label="Timer"
@@ -624,7 +625,7 @@ function QuizRunner({ attempt }: { attempt: StoredAttempt }) {
                           : `Incorrect. ${correctWord}.`}
                   </p>
                   <p className="feedback__label">Explanation</p>
-                  <p className="feedback__text">{check.explanation}</p>
+                  <p className="feedback__text"><RichText text={check.explanation} links /></p>
                   {!!check.resources?.length && (
                     <div className="feedback__resource">
                       <span className="t-muted">Read More on Skill Jar:</span>
